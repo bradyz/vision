@@ -16,7 +16,7 @@ for i = 1:size(vertices, 1);
 
     % Note that a covariance matrix is SPD -
     % This means the SVD and Eigendecomposition will yield the same result.
-    [U, S_unused, vertices_unused] = svd(covariance(points));
+    [U, S_unused, V_unused] = svd(covariance(points));
 
     % The normal is the smallest principle component.
     normals(i, :) = U(:, 3)';
