@@ -8,15 +8,15 @@ def sigmoid(x):
     return 1.0 / (1.0 + np.exp(-x))
 
 
-def dsigmoid(x):
-    return np.multiply(sigmoid(x), (1.0 - sigmoid(x)))
+def dsigmoid(y):
+    return np.multiply(y, 1.0 - y)
 
 
 def mean_squared_error(y_pred, y_true):
     return 0.5 * np.mean(np.square(y_pred - y_true))
 
 
-def neural_net(n_inputs, n_hidden, n_outputs, n_units=10, weight=1e-2):
+def neural_net(n_inputs, n_hidden, n_outputs, n_units=5, weight=1e-2):
     layers = list()
 
     A_1 = np.random.randn(n_units, n_inputs) * weight
@@ -36,62 +36,61 @@ def neural_net(n_inputs, n_hidden, n_outputs, n_units=10, weight=1e-2):
 
 
 def forward_pass(model, example):
-    activations = list()
+    activations = [None for _ in model]
 
     x = example
 
-    for i in range(len(model)):
-        A, b = model[i]
+    for i, layer in enumerate(model):
+        A, b = layer
+        activations[i] = {"input": x,
+                          "output": sigmoid(np.dot(A, x) + b)}
 
-        # Last layer is linear regression.
-        if i == len(model) - 1:
-            activations.append({"input": x,
-                                "output": np.dot(A, x) + b})
-        else:
-            activations.append({"input": x,
-                                "output": sigmoid(np.dot(A, x) + b)})
-
-        x = activations[-1]["output"]
+        x = activations[i]["output"]
 
     return activations[-1]["output"], activations
 
 
-def train(function, model, n_iterations=10000):
+def train(function, model, n_iterations=100000):
+    right = 0
+    total = 0
+
     for _ in range(n_iterations):
-        example = np.random.rand(1, 1)
+        example = np.random.randint(2, size=(2, 1))
         label = function(example)
 
         prediction, activations = forward_pass(model, example)
+
         loss = mean_squared_error(prediction, label)
-
-        print("Loss: %s" % loss)
-        print("Prediction: %s" % (prediction[0][0]))
-        print("Label: %s" % label[0][0])
-
         if np.isnan(loss) or np.isinf(loss):
             break
 
-        delta = np.matrix(loss)
+        right += np.sum(np.round(prediction) == label)
+        total += 1
+        print("Accuracy: %.4f" % (right / total))
+
+        delta = np.matrix(prediction - label)
 
         for level in range(len(model)-1, -1, -1):
             A, b = model[level]
+
             x = activations[level]["input"]
+            y = activations[level]["output"]
+
+            # The gradient with respect to function.
+            delta = np.multiply(delta, dsigmoid(y))
 
             # Update weights.
-            A = A - STEP_SIZE * delta.dot(x.T)
-            b = b - STEP_SIZE * delta
-
-            # Update gradient. Last layer does not have an activation.
-            if level == len(model) - 1:
-                delta = np.multiply(A.T.dot(delta), x)
-            else:
-                delta = np.multiply(A.T.dot(delta), dsigmoid(x))
+            A -= STEP_SIZE * delta.dot(x.T)
+            b -= STEP_SIZE * delta
 
             model[level] = [A, b]
 
+            # The gradient with respect to the input.
+            delta = np.dot(A.T, delta)
+
 
 if __name__ == "__main__":
-    model = neural_net(1, 2, 1)
+    model = neural_net(2, 1, 1)
 
-    hard_function = lambda x: np.sin(x)
-    train(hard_function, model)
+    xor = lambda x: x[0] ^ x[1]
+    train(xor, model)
