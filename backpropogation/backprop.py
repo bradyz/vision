@@ -1,96 +1,97 @@
 import numpy as np
 
 
-N_NODES = 100
-N_BATCHES = 10000
-N_BATCH_SIZE = 32
-STEP_SIZE = 1e-6
+STEP_SIZE = 1e-2
+
+
+def sigmoid(x):
+    return 1.0 / (1.0 + np.exp(-x))
+
+
+def dsigmoid(x):
+    return np.multiply(sigmoid(x), (1.0 - sigmoid(x)))
 
 
 def mean_squared_error(y_pred, y_true):
     return 0.5 * np.mean(np.square(y_pred - y_true))
 
 
-def neural_net(n_inputs, n_hidden, n_outputs):
+def neural_net(n_inputs, n_hidden, n_outputs, n_units=10, weight=1e-2):
     layers = list()
 
-    A_1 = np.random.rand(N_NODES, n_inputs) * 1e-2
-    b_1 = np.random.rand(N_NODES, 1) * 1e-2
+    A_1 = np.random.randn(n_units, n_inputs) * weight
+    b_1 = np.random.randn(n_units, 1) * weight
     layers.append([A_1, b_1])
 
-    for i in range(n_hidden):
-        A_i = np.random.rand(N_NODES, N_NODES) * 1e-2
-        b_i = np.random.rand(N_NODES, 1) * 1e-2
+    for _ in range(n_hidden):
+        A_i = np.random.randn(n_units, n_units) * weight
+        b_i = np.random.randn(n_units, 1) * weight
         layers.append([A_i, b_i])
 
-    A_2 = np.random.rand(n_outputs, N_NODES) * 1e-2
-    b_2 = np.random.rand(n_outputs, 1) * 1e-2
+    A_2 = np.random.randn(n_outputs, n_units) * weight
+    b_2 = np.random.randn(n_outputs, 1) * weight
     layers.append([A_2, b_2])
 
     return layers
 
 
-def forward_pass(model, examples):
-    predictions = np.zeros(examples.shape)
+def forward_pass(model, example):
     activations = list()
 
-    for i in range(examples.shape[0]):
-        activation = list()
-        x = np.matrix(examples[i])
+    x = example
 
-        for layer in model:
-            A, b = layer
+    for i in range(len(model)):
+        A, b = model[i]
 
-            activation.append({"input": x, "output": np.dot(A, x) + b})
-            x = activation[-1]["output"]
+        # Last layer is linear regression.
+        if i == len(model) - 1:
+            activations.append({"input": x,
+                                "output": np.dot(A, x) + b})
+        else:
+            activations.append({"input": x,
+                                "output": sigmoid(np.dot(A, x) + b)})
 
-        predictions[i] = x
-        activations.append(activation)
+        x = activations[-1]["output"]
 
-    return predictions, activations
+    return activations[-1]["output"], activations
 
 
-def train(function, model):
-    for i in range(N_BATCHES):
-        examples = np.random.rand(N_BATCH_SIZE, 1) * 10
-        labels = function(examples)
+def train(function, model, n_iterations=10000):
+    for _ in range(n_iterations):
+        example = np.random.rand(1, 1)
+        label = function(example)
 
-        predictions, activations = forward_pass(model, examples)
+        prediction, activations = forward_pass(model, example)
+        loss = mean_squared_error(prediction, label)
 
-        loss = mean_squared_error(predictions, labels)
+        print("Loss: %s" % loss)
+        print("Prediction: %s" % (prediction[0][0]))
+        print("Label: %s" % label[0][0])
 
-        gradient = np.matrix(loss)
+        if np.isnan(loss) or np.isinf(loss):
+            break
+
+        delta = np.matrix(loss)
 
         for level in range(len(model)-1, -1, -1):
             A, b = model[level]
-
-            x_ = activations[0][level]["input"]
-            for i in range(1, N_BATCH_SIZE):
-                x_ += activations[i][level]["input"]
-            x_ = np.matrix(np.mean(x_))
-
-            dA = gradient.T.dot(x_)
-            db = gradient.T
-
-            # import pdb; pdb.set_trace()
-
-            # Update gradient.
-            gradient = gradient.dot(A)
-
-            A = A - STEP_SIZE * dA
-            b = b - STEP_SIZE * db
+            x = activations[level]["input"]
 
             # Update weights.
-            model[level] = [A, b]
+            A = A - STEP_SIZE * delta.dot(x.T)
+            b = b - STEP_SIZE * delta
 
-        print(loss)
-        if loss == float('inf'):
-            break
+            # Update gradient. Last layer does not have an activation.
+            if level == len(model) - 1:
+                delta = np.multiply(A.T.dot(delta), x)
+            else:
+                delta = np.multiply(A.T.dot(delta), dsigmoid(x))
+
+            model[level] = [A, b]
 
 
 if __name__ == "__main__":
-    easy_function = lambda x: x * 42 + 8
-    hard_function = lambda x: np.sin(x)
-    model = neural_net(1, 3, 1)
+    model = neural_net(1, 2, 1)
 
-    train(easy_function, model)
+    hard_function = lambda x: np.sin(x)
+    train(hard_function, model)
