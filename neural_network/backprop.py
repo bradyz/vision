@@ -1,11 +1,14 @@
 import numpy as np
+from matplotlib import pyplot as plt
 
 
 def sigmoid(x):
+    x = np.clip(x, -100, 100)
     return 1.0 / (1.0 + np.exp(-x))
 
 
 def dsigmoid(y):
+    y = np.clip(y, -100, 100)
     return np.multiply(y, 1.0 - y)
 
 
@@ -33,11 +36,32 @@ def check_shape(gradient, value):
 
 
 def generate(function):
-    example = np.matrix(np.random.rand(1))
+    example = np.matrix(np.random.rand(1) * 10)
     return example, function(example)
 
 
-def train(function, W1, b1, W2, b2, W3, b3, n_iterations=1000000, h=1e-6):
+def sample(function, W1, b1, W2, b2, W3, b3, num_samples=50):
+    plt.clf()
+
+    examples = list()
+    labels = list()
+    predictions = list()
+
+    for _ in range(num_samples):
+        example, label = generate(function)
+        _, prediction = forward_pass(example, W1, b1, W2, b2, W3, b3)
+
+        examples.append(example.tolist()[0][0])
+        labels.append(label.tolist()[0][0])
+        predictions.append(prediction.tolist()[0][0])
+
+    plt.plot(examples, labels, "ro")
+    plt.plot(examples, predictions, "bo")
+
+    plt.pause(0.01)
+
+
+def train(function, W1, b1, W2, b2, W3, b3, n_iterations=10000000, h=1e-5):
     for i in range(n_iterations):
         example, label = generate(function)
 
@@ -62,6 +86,11 @@ def train(function, W1, b1, W2, b2, W3, b3, n_iterations=1000000, h=1e-6):
             validation_loss /= validation_n
 
             print("Validation loss %.3f" % validation_loss)
+
+            if validation_loss < 700:
+                import pdb; pdb.set_trace()
+
+            sample(function, W1, b1, W2, b2, W3, b3)
 
         # Derivative of loss with respect to prediction.
         dldy = np.array(y - label).reshape(1, 1)
@@ -117,16 +146,18 @@ def train(function, W1, b1, W2, b2, W3, b3, n_iterations=1000000, h=1e-6):
 
         W1 -= h * dldW1
         b1 -= h * dldb1
-        #
+
+
 if __name__ == "__main__":
-    W1 = np.random.randn(3, 1) * 1e-2
-    b1 = np.random.randn(3, 1) * 1e-2
+    W1 = np.random.randn(10, 1)
+    b1 = np.random.randn(10, 1)
 
-    W2 = np.random.randn(2, 3) * 1e-2
-    b2 = np.random.randn(2, 1) * 1e-2
+    W2 = np.random.randn(5, 10)
+    b2 = np.random.randn(5, 1)
 
-    W3 = np.random.randn(1, 2) * 1e-2
-    b3 = np.random.randn(1, 1) * 1e-2
+    W3 = np.random.randn(1, 5)
+    b3 = np.random.randn(1, 1)
 
+    plt.ion()
     line = lambda x: 12.5 * x + 10
     train(line, W1, b1, W2, b2, W3, b3)
