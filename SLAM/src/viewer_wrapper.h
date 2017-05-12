@@ -4,7 +4,6 @@
 #include <vector>
 
 #include <Eigen/Core>
-#include <igl/viewer/Viewer.h>
 
 class ViewerWrapper {
 
@@ -22,8 +21,6 @@ public:
   void reset();
 
 private:
-  igl::viewer::Viewer viewer_;
-
   std::vector<Eigen::MatrixX3d> vertices_;
   std::vector<Eigen::MatrixX3i> faces_;
 
