@@ -5,8 +5,8 @@ from matplotlib import pyplot as plt
 
 batch_size = 16
 image_shape = [32, 32, 3]
-latent_n = 32
-vae_alpha = 1.0
+latent_n = 128
+vae_alpha = 1000.0
 
 
 def load_pickle(file_path):

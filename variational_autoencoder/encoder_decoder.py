@@ -12,7 +12,7 @@ def _maxpool(x, kernel):
 def _conv(x, kernel, in_channels, out_channels, scope):
     with tf.variable_scope(scope):
         W = tf.get_variable('W', [kernel, kernel, in_channels, out_channels],
-                initializer=tf.random_normal_initializer())
+                initializer=tf.random_normal_initializer(stddev=1e-4))
         b = tf.get_variable('b', [out_channels],
                 initializer=tf.constant_initializer(0.0))
 
@@ -26,7 +26,7 @@ def _deconv(x, kernel, in_channels, out_channels, scope):
 
     with tf.variable_scope(scope):
         W = tf.get_variable('W', [kernel, kernel, out_channels, in_channels],
-                initializer=tf.random_normal_initializer())
+                initializer=tf.random_normal_initializer(stddev=1e-4))
 
         b = tf.get_variable('b', [out_channels],
                 initializer=tf.constant_initializer(0.0))
@@ -34,9 +34,12 @@ def _deconv(x, kernel, in_channels, out_channels, scope):
         # [16, 1, 1, 32] -> [16, 2, 2, 16].
         Wx = tf.nn.conv2d_transpose(x, W,
                 output_shape=[batch_size, height * 2, width * 2, out_channels],
-                strides=[1, 1, 1, 1])
+                strides=[1, 2, 2, 1])
 
-        return tf.nn.relu(Wx + b)
+        z = Wx + b
+
+        # Leaky relu.
+        return tf.maximum(z, z * 0.1)
 
 
 def encoder(input_op):
@@ -72,26 +75,26 @@ def decoder(sampled_z_op):
     return deconv9
 
 
-def reconstruction_loss(original, reconstructed):
-    return tf.reduce_sum(tf.squared_difference(original, reconstructed))
+def reconstruction_loss(x, x_):
+    return tf.reduce_mean(tf.squared_difference(x, x_))
 
 
 def kl_divergence_loss(mean_op, stddev_op):
     mean_loss = tf.square(mean_op)
-    stddev_loss = stddev_op - tf.log(stddev_op)
+    stddev_loss = stddev_op - tf.log(stddev_op + 1e-8)
 
-    return 0.5 * tf.reduce_sum(mean_loss + stddev_loss)
+    return 0.5 * tf.reduce_mean(mean_loss + stddev_loss)
 
 
 def get_data(dataset, batch_size=util.batch_size):
-    data = np.array([batch_size, 32, 32, 3])
+    data = np.zeros(shape=(batch_size, 32, 32, 3))
 
     for i in range(batch_size):
         example = dataset[b'data'][i]
         example = example.reshape((3, 32, 32))
         example = example.transpose([1, 2, 0])
 
-        data[i] = example
+        data[i,:,:,:] = example
 
     return data
 
@@ -112,21 +115,26 @@ def train(dataset):
 
         tf.summary.scalar('recon_loss', recon_loss_op)
         tf.summary.scalar('vae_loss', vae_loss_op)
-        tf.summary.scalar('total_loss_op', total_loss_op)
+        tf.summary.scalar('total_loss', total_loss_op)
+        tf.summary.image('inputs', input_op, util.batch_size // 4)
+        tf.summary.image('decoded', decoded_op, util.batch_size // 4)
         merged_op = tf.summary.merge_all()
 
         summary_writer = tf.summary.FileWriter('log_dir', sess.graph)
 
-        import pdb; pdb.set_trace()
-
         # Minimize loss function.
-        optimizer = tf.train.GradientDescentOptimizer(1e-4)
+        optimizer = tf.train.AdamOptimizer(1e-3)
         step_op = tf.Variable(0, name='step', trainable=False)
-        train_op = optimizer.minimize(recon_loss_op, global_step=step_op)
+        train_op = optimizer.minimize(total_loss_op, global_step=step_op)
 
-        for _ in range(1000):
+        init_op = tf.global_variables_initializer()
+        sess.run(init_op)
+
+        for _ in range(100000):
+            feed = {input_op: get_data(dataset)}
+
             _, summary, step = sess.run([train_op, merged_op, step_op],
-                    feed_dict={input_op: get_data(dataset)})
+                    feed_dict=feed)
 
             summary_writer.add_summary(summary, step)
 
@@ -135,8 +143,4 @@ if __name__ == '__main__':
     # Keys: filenames, labels, batch_label, data.
     dataset = util.load_pickle('cifar-10-batches-py/data_batch_1')
 
-    sample = dataset[b'data'][0].reshape((3, 32, 32))
-    sample = sample.transpose([1, 2, 0])
-
-    # util.show_image(sample)
     train(dataset)
