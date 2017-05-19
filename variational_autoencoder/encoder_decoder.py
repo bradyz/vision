@@ -99,38 +99,44 @@ def get_data(dataset, batch_size=util.batch_size):
     return data
 
 
-def train(dataset):
-    with tf.Graph().as_default():
-        sess = tf.Session()
+def train(dataset, restore_path='', save_path=''):
+    sess = tf.Session()
 
-        input_op = tf.placeholder(tf.float32, [util.batch_size] + util.image_shape)
+    input_op = tf.placeholder(tf.float32, [util.batch_size] + util.image_shape)
 
-        mean_op, stddev_op = encoder(input_op)
-        sampled_z_op = sampled_z(mean_op, stddev_op)
-        decoded_op = decoder(sampled_z_op)
+    mean_op, stddev_op = encoder(input_op)
+    sampled_z_op = sampled_z(mean_op, stddev_op)
+    decoded_op = decoder(sampled_z_op)
 
-        recon_loss_op = reconstruction_loss(input_op, decoded_op)
-        vae_loss_op = kl_divergence_loss(mean_op, stddev_op)
-        total_loss_op = recon_loss_op + util.vae_alpha * vae_loss_op
+    recon_loss_op = reconstruction_loss(input_op, decoded_op)
+    vae_loss_op = kl_divergence_loss(mean_op, stddev_op)
+    total_loss_op = recon_loss_op + util.vae_alpha * vae_loss_op
 
-        tf.summary.scalar('recon_loss', recon_loss_op)
-        tf.summary.scalar('vae_loss', vae_loss_op)
-        tf.summary.scalar('total_loss', total_loss_op)
-        tf.summary.image('inputs', input_op, util.batch_size // 4)
-        tf.summary.image('decoded', decoded_op, util.batch_size // 4)
-        merged_op = tf.summary.merge_all()
+    tf.summary.scalar('recon_loss', recon_loss_op)
+    tf.summary.scalar('vae_loss', vae_loss_op)
+    tf.summary.scalar('total_loss', total_loss_op)
+    tf.summary.image('inputs', input_op, 2)
+    tf.summary.image('decoded', decoded_op, 2)
+    merged_op = tf.summary.merge_all()
+
+    # Minimize loss function.
+    optimizer = tf.train.AdamOptimizer(1e-3)
+    step_op = tf.Variable(0, name='step', trainable=False)
+    train_op = optimizer.minimize(total_loss_op, global_step=step_op)
+
+    init_op = tf.global_variables_initializer()
+
+    saver = tf.train.Saver()
+
+    with tf.Session() as sess:
+        sess.run(init_op)
+
+        if restore_path:
+            saver.restore(sess, restore_path)
 
         summary_writer = tf.summary.FileWriter('log_dir', sess.graph)
 
-        # Minimize loss function.
-        optimizer = tf.train.AdamOptimizer(1e-3)
-        step_op = tf.Variable(0, name='step', trainable=False)
-        train_op = optimizer.minimize(total_loss_op, global_step=step_op)
-
-        init_op = tf.global_variables_initializer()
-        sess.run(init_op)
-
-        for _ in range(100000):
+        for _ in range(5000):
             feed = {input_op: get_data(dataset)}
 
             _, summary, step = sess.run([train_op, merged_op, step_op],
@@ -138,9 +144,12 @@ def train(dataset):
 
             summary_writer.add_summary(summary, step)
 
+        if save_path:
+            saver.save(sess, save_path)
+
 
 if __name__ == '__main__':
     # Keys: filenames, labels, batch_label, data.
     dataset = util.load_pickle('cifar-10-batches-py/data_batch_1')
 
-    train(dataset)
+    train(dataset, 'model', 'model')
