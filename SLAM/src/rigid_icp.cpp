@@ -2,8 +2,10 @@
 #include <cmath>
 
 #include <Eigen/Core>
-#include <Eigen/Geometry> 
+#include <Eigen/Geometry>
 #include <Eigen/SVD>
+
+#include <igl/per_vertex_normals.h>
 
 #include "viewer_wrapper.h"
 #include "helpers.h"
@@ -11,13 +13,52 @@
 using namespace std;
 using namespace Eigen;
 
-MatrixX3d sampleFromVertices(const MatrixX3d &V, int n) {
-  MatrixX3d result(n, 3);
+MatrixX4d toHomogeneous(const MatrixX3d &A, double z) {
+  MatrixX4d result(A.rows(), 4);
 
-  for (int i = 0; i < n; i++)
-    result.row(i) = V.row(rand() % V.rows());
+  for (int i = 0; i < A.rows(); i++)
+    result.row(i) << A.row(i), z;
 
   return result;
+}
+
+MatrixX3d sampleFromVertices(const MatrixX3d &V, int n, bool partial=false) {
+  MatrixX3d result(n, 3);
+
+  if (!partial) {
+    for (int i = 0; i < n; i++)
+      result.row(i) = V.row(rand() % V.rows());
+  }
+  else {
+    RowVector3d centroid = V.colwise().mean();
+
+    for (int i = 0; i < n; i++) {
+      RowVector3d tmp = V.row(rand() % V.rows());
+
+      while (tmp(0) > centroid(0))
+        tmp = V.row(rand() % V.rows());
+
+      result.row(i) = tmp;
+    }
+  }
+
+  return result;
+}
+
+void sampleFromVerticesWithNormals(const MatrixX3d &V, const MatrixX3i &F, int n,
+                                   MatrixX3d &V_sample, MatrixX3d &N_sample) {
+  MatrixX3d N;
+  igl::per_vertex_normals(V, F, N);
+
+  V_sample.resize(n, 3);
+  N_sample.resize(n, 3);
+
+  for (int i = 0; i < n; i++) {
+    int index = rand() % V.rows();
+
+    V_sample.row(i) = V.row(index);
+    N_sample.row(i) = N.row(index);
+  }
 }
 
 RowVector3d nearestNeighbor(const RowVector3d &p, const MatrixX3d &S) {
@@ -36,6 +77,25 @@ RowVector3d nearestNeighbor(const RowVector3d &p, const MatrixX3d &S) {
   return S.row(closest);
 }
 
+void nearestNeighborWithNormals(const RowVector3d &p, const MatrixX3d &V,
+                                const MatrixX3d &N,
+                                RowVector3d &point, RowVector3d &normal) {
+  int closest = 0;
+  double closest_sq_dist = (V.row(0) - p).squaredNorm();
+
+  for (int i = 0; i < V.rows(); i++) {
+    double tmp_sq_dist = (V.row(i) - p).squaredNorm();
+
+    if (tmp_sq_dist < closest_sq_dist) {
+      closest_sq_dist = tmp_sq_dist;
+      closest = i;
+    }
+  }
+
+  point = V.row(closet);
+  normal = N.row(closet);
+}
+
 // Finds correspondences of T's vertices from S.
 MatrixX3d findCorrespondences(const MatrixX3d &S, const MatrixX3d &T) {
   int n = T.rows();
@@ -46,6 +106,13 @@ MatrixX3d findCorrespondences(const MatrixX3d &S, const MatrixX3d &T) {
     result.row(i) = nearestNeighbor(T.row(i), S);
 
   return result;
+}
+
+void findCorrespondencesWithNormals(const MatrixX3d &V_S, const MatrixX3d &N_S,
+                                    const MatrixX3d &V_T,
+                                    MatrixX3d &V, MatrixX3d &N) {
+  for (int i = 0; i < V_T.rows(); i++)
+    nearestNeighborWithNormals(V_T.row(i), V_S, N_S, V.row(i), N.row(i));
 }
 
 void minimizePointToPoint(const MatrixX3d &S, const MatrixX3d &T,
@@ -99,16 +166,9 @@ void minimizePointToPoint(const MatrixX3d &S, const MatrixX3d &T,
     // Update aligned points.
     T_aligned = P;
   }
-
-  ViewerWrapper viewer;
-  viewer.addPoints(T_aligned);
-  viewer.addPoints(T);
-  viewer.addPoints(S);
-  viewer.renderPoints();
-  viewer.reset();
 }
 
-int main (int argc, char* argv[]) {
+void pointToPointDemo() {
   MatrixX3d V_bunny;
   MatrixX3i F_bunny;
   Helpers::readOBJ("../obj/bunny.obj", V_bunny, F_bunny);
@@ -120,10 +180,10 @@ int main (int argc, char* argv[]) {
   MatrixX3d S = sampleFromVertices(V_bunny, m);
 
   // Target.
-  MatrixX3d T = sampleFromVertices(V_bunny, n);
+  MatrixX3d T = sampleFromVertices(V_bunny, n, true);
 
   // Alter the points.
-  Matrix3d R = AngleAxisd(0.25 * M_PI, Vector3d::UnitX()).toRotationMatrix();
+  Matrix3d R = AngleAxisd(0.1 * M_PI, Vector3d::UnitX()).toRotationMatrix();
   Vector3d t = 0.15 * Vector3d::Random(3, 1);
 
   // Apply rotation then translation.
@@ -145,4 +205,40 @@ int main (int argc, char* argv[]) {
   viewer.addPoints(S);
   viewer.renderPoints();
   viewer.reset();
+}
+
+void minimizePointToPlane(const MatrixX3d &V_S, const MatrixX3d &N_S,
+                          const MatrixX3d &V_T) {
+  int n = V_S.rows();
+
+  Vector3d R(0.0, 0.0, 0.0);
+  Vector3d t(0.0, 0.0, 0.0);
+
+  for (int iteration = 0; iteration < 100; iteration++) {
+    MatrixXd A(n, 6);
+    VectorXd b(n);
+
+    for (int i = 0; i < n; i++) {
+
+    }
+  }
+}
+
+void pointToPlaneDemo() {
+  MatrixX3d V_bunny;
+  MatrixX3i F_bunny;
+  Helpers::readOBJ("../obj/bunny.obj", V_bunny, F_bunny);
+
+  int n = 1000;
+  int m = 500;
+
+  MatrixX3d V_S;
+  MatrixX3d N_S;
+  sampleFromVerticesWithNormals(V_bunny, F_bunny, n, V_S, N_S);
+
+  MatrixX3d V_T = sampleFromVertices(V_bunny, m);
+}
+
+int main(int argc, char* argv[]) {
+  pointToPlaneDemo();
 }
