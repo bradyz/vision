@@ -2,6 +2,7 @@
 #include <cmath>
 
 #include <Eigen/Core>
+#include <Eigen/Dense>
 #include <Eigen/Geometry>
 #include <Eigen/SVD>
 
@@ -13,34 +14,11 @@
 using namespace std;
 using namespace Eigen;
 
-MatrixX4d toHomogeneous(const MatrixX3d &A, double z) {
-  MatrixX4d result(A.rows(), 4);
-
-  for (int i = 0; i < A.rows(); i++)
-    result.row(i) << A.row(i), z;
-
-  return result;
-}
-
-MatrixX3d sampleFromVertices(const MatrixX3d &V, int n, bool partial=false) {
+MatrixX3d sampleFromVertices(const MatrixX3d &V, int n) {
   MatrixX3d result(n, 3);
 
-  if (!partial) {
-    for (int i = 0; i < n; i++)
-      result.row(i) = V.row(rand() % V.rows());
-  }
-  else {
-    RowVector3d centroid = V.colwise().mean();
-
-    for (int i = 0; i < n; i++) {
-      RowVector3d tmp = V.row(rand() % V.rows());
-
-      while (tmp(0) > centroid(0))
-        tmp = V.row(rand() % V.rows());
-
-      result.row(i) = tmp;
-    }
-  }
+  for (int i = 0; i < n; i++)
+    result.row(i) = V.row(rand() % V.rows());
 
   return result;
 }
@@ -59,6 +37,13 @@ void sampleFromVerticesWithNormals(const MatrixX3d &V, const MatrixX3i &F, int n
     V_sample.row(i) = V.row(index);
     N_sample.row(i) = N.row(index);
   }
+}
+
+void applyRotationTranslation(MatrixX3d &V, const Vector3d &R, const Vector3d &t) {
+  Matrix3d M = Helpers::toRotationMatrix(R);
+
+  for (int i = 0; i < V.rows(); i++)
+    V.row(i) = M * V.row(i).transpose() + t;
 }
 
 RowVector3d nearestNeighbor(const RowVector3d &p, const MatrixX3d &S) {
@@ -92,8 +77,8 @@ void nearestNeighborWithNormals(const RowVector3d &p, const MatrixX3d &V,
     }
   }
 
-  point = V.row(closet);
-  normal = N.row(closet);
+  point = V.row(closest);
+  normal = N.row(closest);
 }
 
 // Finds correspondences of T's vertices from S.
@@ -111,8 +96,19 @@ MatrixX3d findCorrespondences(const MatrixX3d &S, const MatrixX3d &T) {
 void findCorrespondencesWithNormals(const MatrixX3d &V_S, const MatrixX3d &N_S,
                                     const MatrixX3d &V_T,
                                     MatrixX3d &V, MatrixX3d &N) {
-  for (int i = 0; i < V_T.rows(); i++)
-    nearestNeighborWithNormals(V_T.row(i), V_S, N_S, V.row(i), N.row(i));
+  int n = V_T.rows();
+
+  V.resize(n, 3);
+  N.resize(n, 3);
+
+  for (int i = 0; i < n; i++) {
+    RowVector3d point;
+    RowVector3d normal;
+    nearestNeighborWithNormals(V_T.row(i), V_S, N_S, point, normal);
+
+    V.row(i) = point;
+    N.row(i) = normal;
+  }
 }
 
 void minimizePointToPoint(const MatrixX3d &S, const MatrixX3d &T,
@@ -180,7 +176,7 @@ void pointToPointDemo() {
   MatrixX3d S = sampleFromVertices(V_bunny, m);
 
   // Target.
-  MatrixX3d T = sampleFromVertices(V_bunny, n, true);
+  MatrixX3d T = sampleFromVertices(V_bunny, n);
 
   // Alter the points.
   Matrix3d R = AngleAxisd(0.1 * M_PI, Vector3d::UnitX()).toRotationMatrix();
@@ -209,19 +205,58 @@ void pointToPointDemo() {
 
 void minimizePointToPlane(const MatrixX3d &V_S, const MatrixX3d &N_S,
                           const MatrixX3d &V_T) {
-  int n = V_S.rows();
+  int n = V_T.rows();
+
+  MatrixX3d V = V_T;
 
   Vector3d R(0.0, 0.0, 0.0);
   Vector3d t(0.0, 0.0, 0.0);
 
   for (int iteration = 0; iteration < 100; iteration++) {
+    MatrixX3d D;
+    MatrixX3d N;
+    findCorrespondencesWithNormals(V_S, N_S, V, D, N);
+
     MatrixXd A(n, 6);
     VectorXd b(n);
 
-    for (int i = 0; i < n; i++) {
+    A.setZero();
+    b.setZero();
 
+    double energy = 0.0;
+
+    for (int i = 0; i < n; i++) {
+      double tmp = (D.row(i) - V.row(i)).dot(N.row(i));
+      energy += tmp * tmp;
+
+      A(i, 0) = V(i, 1) * N(i, 2) - V(i, 2) * N(i, 1);
+      A(i, 1) = V(i, 2) * N(i, 0) - V(i, 0) * N(i, 2);
+      A(i, 2) = V(i, 0) * N(i, 1) - V(i, 1) * N(i, 0);
+      A(i, 3) = N(i, 0);
+      A(i, 4) = N(i, 1);
+      A(i, 5) = N(i, 2);
+
+      for (int j = 0; j < 3; j++)
+        b(i) += (D(i, j) - V(i, j)) * N(i, j);
     }
+
+    ColPivHouseholderQR<MatrixXd> qr(A);
+    VectorXd x = qr.solve(b);
+
+    cout << "Iteration: " << iteration << " Energy: " << energy << endl;
+
+    R = Vector3d(x(0), x(1), x(2));
+    t = Vector3d(x(3), x(4), x(5));
+
+    applyRotationTranslation(V, R, t);
   }
+
+  ViewerWrapper viewer;
+  viewer.addPoints(V);
+  viewer.addPoints(V_T);
+  viewer.addPoints(V_S);
+  viewer.renderPoints();
+  viewer.reset();
 }
 
 void pointToPlaneDemo() {
@@ -237,8 +272,17 @@ void pointToPlaneDemo() {
   sampleFromVerticesWithNormals(V_bunny, F_bunny, n, V_S, N_S);
 
   MatrixX3d V_T = sampleFromVertices(V_bunny, m);
+
+  Matrix3d R = AngleAxisd(0.15 * M_PI, Vector3d::UnitX()).toRotationMatrix();
+  Vector3d t = 0.15 * Vector3d::Random(3, 1);
+
+  V_T = (R * V_T.transpose()).transpose();
+  V_T.rowwise() += t.transpose();
+
+  minimizePointToPlane(V_S, N_S, V_T);
 }
 
 int main(int argc, char* argv[]) {
+  pointToPointDemo();
   pointToPlaneDemo();
 }

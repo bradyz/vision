@@ -12,6 +12,8 @@ void readOBJ(const std::string &filename,
 
 void coordinateAxis(Eigen::MatrixX3d &V, Eigen::MatrixX2i &E, Eigen::MatrixX3d &C);
 
+Eigen::Matrix3d toRotationMatrix(const Eigen::Vector3d &R);
+
 };
 
 #endif
