@@ -3,13 +3,11 @@ from matplotlib import pyplot as plt
 
 
 def sigmoid(x):
-    x = np.clip(x, -100, 100)
     return 1.0 / (1.0 + np.exp(-x))
 
 
 def dsigmoid(y):
-    y = np.clip(y, -100, 100)
-    return np.multiply(y, 1.0 - y)
+    return np.multiply(sigmoid(y), 1.0 - sigmoid(y))
 
 
 def mean_squared_error(y_pred, y_true):
@@ -40,7 +38,7 @@ def generate(function):
     return example, function(example)
 
 
-def sample(function, W1, b1, W2, b2, W3, b3, num_samples=50):
+def sample(function, W1, b1, W2, b2, W3, b3, num_samples=100):
     plt.clf()
 
     examples = list()
@@ -61,7 +59,7 @@ def sample(function, W1, b1, W2, b2, W3, b3, num_samples=50):
     plt.pause(0.01)
 
 
-def train(function, W1, b1, W2, b2, W3, b3, n_iterations=10000000, h=1e-5):
+def train(function, W1, b1, W2, b2, W3, b3, n_iterations=1000000, h=1e-3):
     for i in range(n_iterations):
         example, label = generate(function)
 
@@ -74,7 +72,7 @@ def train(function, W1, b1, W2, b2, W3, b3, n_iterations=10000000, h=1e-5):
         if np.isnan(loss):
             print("NaN encountered at iteration %d." % i)
             break
-        elif i % 10000 == 0:
+        elif i % 1000 == 0:
             validation_n = 100
             validation_loss = 0.0
 
@@ -86,9 +84,6 @@ def train(function, W1, b1, W2, b2, W3, b3, n_iterations=10000000, h=1e-5):
             validation_loss /= validation_n
 
             print("Validation loss %.3f" % validation_loss)
-
-            if validation_loss < 700:
-                import pdb; pdb.set_trace()
 
             sample(function, W1, b1, W2, b2, W3, b3)
 
@@ -149,15 +144,18 @@ def train(function, W1, b1, W2, b2, W3, b3, n_iterations=10000000, h=1e-5):
 
 
 if __name__ == "__main__":
-    W1 = np.random.randn(10, 1)
-    b1 = np.random.randn(10, 1)
+    n_1 = 16
+    n_2 = 16
 
-    W2 = np.random.randn(5, 10)
-    b2 = np.random.randn(5, 1)
+    W1 = np.random.randn(n_1, 1) * 1e-3
+    b1 = np.zeros((n_1, 1))
 
-    W3 = np.random.randn(1, 5)
-    b3 = np.random.randn(1, 1)
+    W2 = np.random.randn(n_2, n_1) * 1e-3
+    b2 = np.zeros((n_2, 1))
+
+    W3 = np.random.randn(1, n_2) * 1e-3
+    b3 = np.zeros((1, 1))
 
     plt.ion()
-    line = lambda x: 12.5 * x + 10
+    line = lambda x: np.cos(0.5 * x) + 10.0
     train(line, W1, b1, W2, b2, W3, b3)
