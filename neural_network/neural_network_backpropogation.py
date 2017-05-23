@@ -1,13 +1,27 @@
 import numpy as np
+
 from matplotlib import pyplot as plt
+
+
+SIGMOID = True
 
 
 def sigmoid(x):
     return 1.0 / (1.0 + np.exp(-x))
 
 
-def dsigmoid(y):
-    return np.multiply(sigmoid(y), 1.0 - sigmoid(y))
+def dsigmoid(x):
+    return np.multiply(sigmoid(x), 1.0 - sigmoid(x))
+
+
+def activation(x):
+    if SIGMOID:
+        return sigmoid(x)
+
+
+def dactivation(x):
+    if SIGMOID:
+        return dsigmoid(x)
 
 
 def mean_squared_error(y_pred, y_true):
@@ -17,11 +31,11 @@ def mean_squared_error(y_pred, y_true):
 def forward_pass(x, W1, b1, W2, b2, W3, b3):
     # Layer 1
     y1 = np.dot(W1, x) + b1
-    z1 = sigmoid(y1)
+    z1 = activation(y1)
 
     # Layer 2.
     y2 = np.dot(W2, z1) + b2
-    z2 = sigmoid(y2)
+    z2 = activation(y2)
 
     # Layer 3.
     y = np.dot(W3, z2) + b3
@@ -31,6 +45,41 @@ def forward_pass(x, W1, b1, W2, b2, W3, b3):
 def check_shape(gradient, value):
     warning = "Expected: %s, Actual: %s" % (gradient.shape, value.shape)
     assert gradient.shape == value.shape, warning
+
+
+def check(parameter, actual, x, label, W1, b1, W2, b2, W3, b3, h=1e-7, tol=1e-3):
+    expected = np.zeros(actual.shape)
+
+    m, n = parameter.shape
+
+    for i in range(m):
+        for j in range(n):
+            tmp = parameter[i, j]
+
+            parameter[i, j] = tmp + h
+            _, y = forward_pass(x, W1, b1, W2, b2, W3, b3)
+            loss_1 = mean_squared_error(y, label)
+
+            parameter[i, j] = tmp - h
+            _, y = forward_pass(x, W1, b1, W2, b2, W3, b3)
+            loss_2 = mean_squared_error(y, label)
+
+            expected[i, j] = (loss_1 - loss_2) / (2.0 * h)
+
+            parameter[i, j] = tmp
+
+    return np.square(expected - actual).sum() < tol
+
+
+def gradient_check(x, label, W1, b1, W2, b2, W3, b3,
+        dldW1, dldb1, dldW2, dldb2, dldW3, dldb3):
+
+    assert check(W3, dldW3, x, label, W1, b1, W2, b2, W3, b3), "W3"
+    assert check(W2, dldW2, x, label, W1, b1, W2, b2, W3, b3), "W2"
+    assert check(W1, dldW1, x, label, W1, b1, W2, b2, W3, b3), "W1"
+    assert check(b3, dldb3, x, label, W1, b1, W2, b2, W3, b3), "b3"
+    assert check(b2, dldb2, x, label, W1, b1, W2, b2, W3, b3), "b2"
+    assert check(b1, dldb1, x, label, W1, b1, W2, b2, W3, b3), "b1"
 
 
 def generate(function):
@@ -87,7 +136,7 @@ def train(function, W1, b1, W2, b2, W3, b3, h=1e-4, batch_size=64, n=10000000):
         dldW1 = np.zeros((W1.shape))
         dldb1 = np.zeros((b1.shape))
 
-        for _ in range(batch_size):
+        for batch in range(batch_size):
             example, label = generate(function)
 
             activations, y = forward_pass(example, W1, b1, W2, b2, W3, b3)
@@ -115,7 +164,7 @@ def train(function, W1, b1, W2, b2, W3, b3, h=1e-4, batch_size=64, n=10000000):
 
             # Layer 2.
             dydz2 = np.matrix(W3)
-            dz2dy2 = dsigmoid(y2)
+            dz2dy2 = dactivation(y2)
 
             dldz2 = np.dot(np.transpose(dydz2), dldy)
             dldy2 = np.multiply(dz2dy2, dldz2)
@@ -131,7 +180,7 @@ def train(function, W1, b1, W2, b2, W3, b3, h=1e-4, batch_size=64, n=10000000):
 
             # Layer 1.
             dy2dz1 = W2
-            dz1dy1 = dsigmoid(y1)
+            dz1dy1 = dactivation(y1)
 
             dldz1 = np.dot(np.transpose(dy2dz1), dldy2)
             dldy1 = np.multiply(dz1dy1, dldz1)
@@ -144,6 +193,11 @@ def train(function, W1, b1, W2, b2, W3, b3, h=1e-4, batch_size=64, n=10000000):
 
             check_shape(dldW1, W1)
             check_shape(dldb1, b1)
+
+            # Occasionally check if gradients are okay.
+            if i % 99 == 0 and batch == 0:
+                gradient_check(x, label, W1, b1, W2, b2, W3, b3,
+                        dldW1, dldb1, dldW2, dldb2, dldW3, dldb3)
 
         # Apply gradients.
         W3 -= h * dldW3
@@ -170,5 +224,5 @@ if __name__ == "__main__":
     b3 = np.zeros((1, 1))
 
     plt.ion()
-    line = lambda x: -3.5 * x + 10.0
+    line = lambda x: -2.5 * x + 10.0
     train(line, W1, b1, W2, b2, W3, b3)
