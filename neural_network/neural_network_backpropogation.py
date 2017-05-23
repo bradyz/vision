@@ -3,7 +3,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 
-SIGMOID = True
+SIGMOID = False
 
 
 def sigmoid(x):
@@ -14,14 +14,24 @@ def dsigmoid(x):
     return np.multiply(sigmoid(x), 1.0 - sigmoid(x))
 
 
+def relu(x):
+    return np.clip(np.maximum(x, 0.0), -100.0, 100.0)
+
+
+def drelu(x):
+    return 1.0 * (x > 0.0)
+
+
 def activation(x):
     if SIGMOID:
         return sigmoid(x)
+    return relu(x)
 
 
 def dactivation(x):
     if SIGMOID:
         return dsigmoid(x)
+    return drelu(x)
 
 
 def mean_squared_error(y_pred, y_true):
@@ -47,7 +57,7 @@ def check_shape(gradient, value):
     assert gradient.shape == value.shape, warning
 
 
-def check(parameter, actual, x, label, W1, b1, W2, b2, W3, b3, h=1e-7, tol=1e-3):
+def check(parameter, actual, x, label, W1, b1, W2, b2, W3, b3, h=1e-8, tol=1e-3):
     expected = np.zeros(actual.shape)
 
     m, n = parameter.shape
@@ -68,7 +78,10 @@ def check(parameter, actual, x, label, W1, b1, W2, b2, W3, b3, h=1e-7, tol=1e-3)
 
             parameter[i, j] = tmp
 
-    return np.square(expected - actual).sum() < tol
+    numer = np.square(expected - actual).sum()
+    denom = np.square(actual).sum() + 1e-5
+
+    return numer / denom < tol
 
 
 def gradient_check(x, label, W1, b1, W2, b2, W3, b3,
@@ -83,7 +96,7 @@ def gradient_check(x, label, W1, b1, W2, b2, W3, b3,
 
 
 def generate(function):
-    example = np.matrix(np.random.rand(1) * 10)
+    example = np.matrix(np.random.rand(1) * 100.0)
     return example, function(example)
 
 
@@ -108,7 +121,7 @@ def sample(function, W1, b1, W2, b2, W3, b3, num_samples=100):
     plt.pause(0.01)
 
 
-def train(function, W1, b1, W2, b2, W3, b3, h=1e-4, batch_size=64, n=10000000):
+def train(function, W1, b1, W2, b2, W3, b3, h=1e-5, batch_size=32, n=10000000):
     for i in range(n):
         if i % 100 == 0:
             validation_n = 100
@@ -213,16 +226,17 @@ def train(function, W1, b1, W2, b2, W3, b3, h=1e-4, batch_size=64, n=10000000):
 if __name__ == "__main__":
     n_1 = 8
     n_2 = 8
+    eps = 1e-5
 
-    W1 = np.random.randn(n_1, 1) * 1e-2
+    W1 = np.random.randn(n_1, 1) * eps
     b1 = np.zeros((n_1, 1))
 
-    W2 = np.random.randn(n_2, n_1) * 1e-2
+    W2 = np.random.randn(n_2, n_1) * eps
     b2 = np.zeros((n_2, 1))
 
-    W3 = np.random.randn(1, n_2) * 1e-2
+    W3 = np.random.randn(1, n_2) * eps
     b3 = np.zeros((1, 1))
 
     plt.ion()
-    line = lambda x: -2.5 * x + 10.0
+    line = lambda x: 12.0 * np.cos(np.power(x, 0.4)) + 10.0
     train(line, W1, b1, W2, b2, W3, b3)
