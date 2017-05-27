@@ -2,3 +2,8 @@
 *.swp
 
 digit_recognition/data
+
+*/build/
+*/lib/
+
+.DS_Store

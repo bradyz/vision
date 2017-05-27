@@ -109,7 +109,8 @@ def load_model_vgg():
     x = Dense(4096, activation='relu', name='fc2')(x)
     x = Dense(NUM_CLASSES, activation='softmax', name='predictions')(x)
 
-    model = Model(input=img_input, output=x) 
+    model = Model(input=img_input, output=x)
+    model.load_weights(SAVE_FILE, by_name=True)
 
     return model
 

@@ -2,7 +2,7 @@ from matplotlib import pyplot as plt
 import numpy as np
 
 
-NB_SAMPLES = 100
+NB_SAMPLES = 1000
 NB_BATCHES = 10000
 NB_DIMENSIONS = 20
 
