@@ -35,9 +35,8 @@ def postprocess(x):
     x[:, :, :, 0] += 123.68 / 255.0
     x[:, :, :, 1] += 116.78 / 255.0
     x[:, :, :, 2] += 103.93 / 255.0
-    x = np.clip(x, 0.0, 1.0)
 
-    return x
+    return np.clip(x, 0.0, 1.0)
 
 
 def to_tensor(x):
@@ -77,7 +76,7 @@ def get_style_loss(s, vgg, layer):
     return K.mean(K.square(gram_matrix(x_op) - gram_matrix(s_op)))
 
 
-def get_total_loss(c, s, vgg, n=5, alpha=0.05, beta=0.008):
+def get_total_loss(c, s, vgg, n=5, alpha=0.5, beta=0.05):
     content_loss = 0.0
     style_loss = 0.0
 
@@ -104,27 +103,28 @@ def get_gradient(c, s):
     return lambda x: gradient_func([x])[0]
 
 
-def optimize(c, s, h=1e-5, noise=False):
+def optimize(c, s, h=1e-6, mu=0.9, noise=False):
     if noise:
         x = to_tensor(np.random.randn(224, 224, 3))
     else:
         x = to_tensor(np.copy(c))
 
-    plt.subplot(223)
     show_image(x[0], "Iteration: 0")
 
     get_dx = get_gradient(c, s)
 
+    v = np.zeros(shape=(x.shape))
+
     for i in range(1, 10000):
         x = preprocess(x)
 
-        dx = get_dx(x)
+        dx = get_dx(x + mu * v)
+        v = mu * v - h * dx
 
-        x = x - h * dx
+        x = x + v
 
         x = postprocess(x)
 
-        plt.subplot(223)
         show_image(x[0], "Iteration: %d" % i)
 
 
@@ -135,11 +135,11 @@ if __name__ == '__main__':
     content_image = load_image('content.jpg')
     style_image = load_image('style.jpg')
 
-    plt.subplot(221)
+    plt.subplot2grid((3, 2), (0, 0))
     show_image(content_image, 'Content Image')
 
-    plt.subplot(224)
+    plt.subplot2grid((3, 2), (0, 1))
     show_image(style_image, 'Style Image')
 
-    plt.subplot(223)
-    optimize(content_image, style_image, noise=False)
+    plt.subplot2grid((3, 2), (1, 0), colspan=2, rowspan=2)
+    optimize(content_image, style_image, noise=True)
