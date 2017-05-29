@@ -7,6 +7,9 @@ from matplotlib import pyplot as plt
 import numpy as np
 
 
+MEAN_IMAGE = np.array((123.68, 116.78, 103.93)) / 255.0
+
+
 def load_image(path):
     return np.float32(np.array(PIL.Image.open(path))) / 255.0
 
@@ -24,19 +27,11 @@ def show_image(image, title):
 
 
 def preprocess(x):
-    x[:, :, :, 0] -= 123.68 / 255.0
-    x[:, :, :, 1] -= 116.78 / 255.0
-    x[:, :, :, 2] -= 103.93 / 255.0
-
-    return x
+    return x[:,:,:,:] - MEAN_IMAGE
 
 
 def postprocess(x):
-    x[:, :, :, 0] += 123.68 / 255.0
-    x[:, :, :, 1] += 116.78 / 255.0
-    x[:, :, :, 2] += 103.93 / 255.0
-
-    return np.clip(x, 0.0, 1.0)
+    return np.clip(x + MEAN_IMAGE, 0.0, 1.0)
 
 
 def to_tensor(x):
@@ -61,7 +56,7 @@ def get_content_loss(c, vgg, layer):
     get_activation = K.function([vgg.layers[0].input], [activation])
 
     x_op = activation
-    c_op = to_constant(get_activation([to_tensor(c)])[0])
+    c_op = to_constant(get_activation([preprocess(to_tensor(c))])[0])
 
     return K.sum(K.square(x_op - c_op))
 
@@ -92,30 +87,32 @@ def get_total_loss(c, s, vgg, n=5, alpha=0.5, beta=0.05):
     return alpha * content_loss + beta * style_loss
 
 
-def get_gradient(c, s):
-    x_op = keras.layers.Input((224, 224, 3))
-    vgg = keras.applications.vgg16.VGG16(include_top=False, input_tensor=x_op)
+def get_deep_dream_loss(c, vgg, alpha=1.0, beta=2.0, content_layer='input_1'):
+    layer = vgg.layers[-1]
 
-    loss_op = get_total_loss(c, s, vgg)
+    d = layer.output.shape.as_list()[-1]
+    d = np.random.randint(d)
 
-    gradient_func = K.function([x_op], K.gradients(loss_op, [x_op]))
+    content_loss = get_content_loss(c, vgg, content_layer)
+    deep_dream_loss = -K.sum(K.square(layer.output[:,:,:,d]))
+
+    return alpha * content_loss + beta * deep_dream_loss
+
+
+def get_gradient(x_op, loss_op):
+    gradient_op = K.gradients(loss_op, [x_op])[0]
+    gradient_op = gradient_op / (K.sqrt(K.sum(K.square(gradient_op)) + 1e-8))
+
+    gradient_func = K.function([x_op], [gradient_op])
 
     return lambda x: gradient_func([x])[0]
 
 
-def optimize(c, s, h=1e-6, mu=0.9, noise=False):
-    if noise:
-        x = to_tensor(np.random.randn(224, 224, 3))
-    else:
-        x = to_tensor(np.copy(c))
-
-    show_image(x[0], "Iteration: 0")
-
-    get_dx = get_gradient(c, s)
-
+def optimize(x_initial, get_dx, h=1.0, mu=0.9, n=10000):
+    x = np.copy(to_tensor(x_initial))
     v = np.zeros(shape=(x.shape))
 
-    for i in range(1, 10000):
+    for i in range(1, n):
         x = preprocess(x)
 
         dx = get_dx(x + mu * v)
@@ -128,12 +125,9 @@ def optimize(c, s, h=1e-6, mu=0.9, noise=False):
         show_image(x[0], "Iteration: %d" % i)
 
 
-if __name__ == '__main__':
-    plt.ion()
-    plt.show(block=False)
-
-    content_image = load_image('content.jpg')
-    style_image = load_image('style.jpg')
+def style_transfer(content_path, style_path):
+    content_image = load_image(content_path)
+    style_image = load_image(style_path)
 
     plt.subplot2grid((3, 2), (0, 0))
     show_image(content_image, 'Content Image')
@@ -142,4 +136,34 @@ if __name__ == '__main__':
     show_image(style_image, 'Style Image')
 
     plt.subplot2grid((3, 2), (1, 0), colspan=2, rowspan=2)
-    optimize(content_image, style_image, noise=True)
+
+    x_op = keras.layers.Input((224, 224, 3))
+    vgg = keras.applications.vgg16.VGG16(include_top=False, input_tensor=x_op)
+    loss_op = get_total_loss(content_image, style_image, vgg)
+
+    optimize(content_image, get_gradient(x_op, loss_op))
+
+
+def deep_dream(content_image):
+    content_image = load_image(content_image)
+
+    plt.subplot(121)
+    show_image(content_image, 'Content Image')
+
+    plt.subplot(122)
+
+    x_op = keras.layers.Input((224, 224, 3))
+    vgg = keras.applications.vgg16.VGG16(include_top=False, input_tensor=x_op)
+    loss_op = get_deep_dream_loss(content_image, vgg)
+
+    optimize(content_image, get_gradient(x_op, loss_op))
+
+
+if __name__ == '__main__':
+    np.random.seed(1337)
+
+    plt.ion()
+    plt.show(block=False)
+
+    deep_dream('content.jpg')
+    style_transfer('content.jpg', 'cubism1.jpg')
