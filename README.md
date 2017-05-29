@@ -10,3 +10,7 @@
 ### Deep Dream
 
 <img src="visualizing_cnn/deepdream.png" width="50%">
+
+### Face Detector
+
+<img src="face_detector/face_detector.png" width="50%">
