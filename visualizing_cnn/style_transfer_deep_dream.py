@@ -51,6 +51,25 @@ def gram_matrix(x_op):
     return K.batch_dot(x_flatten_t_op, x_flatten_op)
 
 
+def get_smooth_loss(x_op, coeff=4):
+    _, h, w, _ = x_op.shape.as_list()
+
+    top_left = x_op[:,:h-2,:w-2,:]
+    top_right = x_op[:,:h-2,2:w,:]
+
+    bot_left = x_op[:,2:h,:w-2,:]
+    bot_right = x_op[:,2:h,2:w,:]
+
+    mid = x_op[:,1:h-1,1:w-1,:]
+
+    loss = 0.0
+
+    for neighbor in [top_left, top_right, bot_left, bot_right]:
+        loss += K.mean(K.pow(mid - neighbor, coeff))
+
+    return 1.0 / 4.0 * K.sum(loss)
+
+
 def get_content_loss(c, vgg, layer):
     activation = vgg.get_layer(layer).output
     get_activation = K.function([vgg.layers[0].input], [activation])
@@ -87,16 +106,18 @@ def get_total_loss(c, s, vgg, n=5, alpha=0.5, beta=0.05):
     return alpha * content_loss + beta * style_loss
 
 
-def get_deep_dream_loss(c, vgg, alpha=1.0, beta=2.0, content_layer='input_1'):
+def get_deep_dream_loss(c, vgg, alpha=1000.0, beta=1.0, gamma=1.0,
+        content_layer='input_1'):
     layer = vgg.layers[-1]
 
     d = layer.output.shape.as_list()[-1]
     d = np.random.randint(d)
 
+    smooth_loss = get_smooth_loss(layer.output)
     content_loss = get_content_loss(c, vgg, content_layer)
     deep_dream_loss = -K.sum(K.square(layer.output[:,:,:,d]))
 
-    return alpha * content_loss + beta * deep_dream_loss
+    return alpha * smooth_loss + beta * content_loss + gamma * deep_dream_loss
 
 
 def get_gradient(x_op, loss_op):
@@ -166,4 +187,4 @@ if __name__ == '__main__':
     plt.show(block=False)
 
     deep_dream('content.jpg')
-    style_transfer('content.jpg', 'cubism1.jpg')
+    # style_transfer('content.jpg', 'starry_night.jpg')
