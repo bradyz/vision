@@ -192,13 +192,19 @@ def test(coefficients):
 
         height, width = gray_image.shape
 
+        gray_image = Image.fromarray(gray_image)
+        gray_image = gray_image.resize((width / 4, height / 4), Image.ANTIALIAS)
+        gray_image = np.array(gray_image)
+
+        height, width = gray_image.shape
+
         best = None
         best_score = None
 
-        for x in range(0, width, 200):
-            for y in range(0, height, 200):
-                for dx in range(200, width - x, 200):
-                    for dy in range(200, height - y, 200):
+        for x in range(0, width, 40):
+            for y in range(0, height, 40):
+                for dx in range(40, width - x, 40):
+                    for dy in range(40, height - y, 40):
                         candidate_image = gray_image[y:y+dy,x:x+dx]
                         candidate_image = downsample(candidate_image)
 

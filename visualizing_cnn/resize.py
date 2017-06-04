@@ -10,13 +10,8 @@ def resize(filename, width, height):
     image = Image.open(filename)
     image = image.resize((width, height), Image.ANTIALIAS)
 
-    filename_without_extension = ''.join(filename.split('.')[:-1])
-
-    out_path = '%s_%d_%d.jpg' % (filename_without_extension, width, height)
-
-    image.save(out_path, 'jpeg')
-
-    print('Saved to %s' % out_path)
+    image.save(filename)
+    print('Saved to %s' % filename)
 
 
 if __name__ == '__main__':

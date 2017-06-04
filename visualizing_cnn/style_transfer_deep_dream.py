@@ -103,8 +103,8 @@ def get_total_loss(c, s, vgg, n=5, alpha=0.5, beta=0.05):
     content_loss /= n
     style_loss /= n
 
-    return alpha * content_loss + beta * style_loss
-
+    return alpha * content_loss + beta * style_loss + \
+            10.0 * get_smooth_loss(vgg.layers[0].input)
 
 def get_deep_dream_loss(c, vgg, alpha=1000.0, beta=1.0, gamma=1.0,
         content_layer='input_1'):
@@ -186,5 +186,5 @@ if __name__ == '__main__':
     plt.ion()
     plt.show(block=False)
 
-    deep_dream('content.jpg')
-    # style_transfer('content.jpg', 'starry_night.jpg')
+    # deep_dream('content.jpg')
+    style_transfer('content.jpg', 'candy.jpg')
