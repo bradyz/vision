@@ -40,7 +40,96 @@ def conv_forward_naive(x, w, b, conv_param):
         for k in range(F):
             for i in range(H_):
                 for j in range(W_):
-                    y[n,k,i,j] = np.sum(np.multiply(pad[n,:,s*i:s*i+HH,s*j:s*j+WW], w[k]))
+                    y[n,k,i,j] = np.sum(np.multiply(pad[n,:,s*i:s*i+HH,s*j:s*j+WW],
+                                                    w[k]))
                     y[n,k,i,j] += b[k]
 
     return y, (x, w, b, conv_param)
+
+
+def conv_backward_naive(dout, cache):
+    """
+    A naive implementation of the backward pass for a convolutional layer.
+
+    Inputs:
+    - dout: Upstream derivatives.
+    - cache: A tuple of (x, w, b, conv_param) as in conv_forward_naive
+
+    Returns a tuple of:
+    - dx: Gradient with respect to x
+    - dw: Gradient with respect to w
+    - db: Gradient with respect to b
+    """
+    dx, dw, db = None, None, None
+
+    return dx, dw, db
+
+
+def max_pool_forward_naive(x, pool_param):
+    """
+    A naive implementation of the forward pass for a max pooling layer.
+
+    Inputs:
+    - x: Input data, of shape (N, C, H, W)
+    - pool_param: dictionary with the following keys:
+      - 'pool_height': The height of each pooling region
+      - 'pool_width': The width of each pooling region
+      - 'stride': The distance between adjacent pooling regions
+
+    Returns a tuple of:
+    - out: Output data
+    - cache: (x, pool_param)
+    """
+    s = pool_param['stride']
+    h = pool_param['pool_height']
+    w = pool_param['pool_width']
+
+    N, C, H, W = x.shape
+    H_ = H // s
+    W_ = W // s
+
+    y = np.zeros((N, C, H_, W_))
+
+    for n in range(N):
+        for k in range(C):
+            for i in range(H_):
+                for j in range(W_):
+                    y[n,k,i,j] = np.max(x[n,k,i*s:i*s+h,j*s:j*s+w])
+
+    return y, (x, pool_param)
+
+
+def max_pool_backward_naive(dout, cache):
+    """
+    A naive implementation of the backward pass for a max pooling layer.
+
+    Inputs:
+    - dout: Upstream derivatives
+    - cache: A tuple of (x, pool_param) as in the forward pass.
+
+    Returns:
+    - dx: Gradient with respect to x
+    """
+    x, pool_param = cache
+    s = pool_param['stride']
+    h = pool_param['pool_height']
+    w = pool_param['pool_width']
+
+    N, C, H, W = x.shape
+    H_ = H // s
+    W_ = W // s
+
+    dx = np.zeros((x.shape))
+
+    for n in range(N):
+        for k in range(C):
+            for i in range(H_):
+                for j in range(W_):
+                    dx[n,k,i*s:i*s+h,j*s:j*s+w] = dout[n,k,i,j]
+
+                    pool = np.max(x[n,k,i*s:i*s+h,j*s:j*s+w])
+                    chunk = x[n,k,i*s:i*s+h,j*s:j*s+w]
+
+                    dx[n,k,i*s:i*s+h,j*s:j*s+w] *= (pool == chunk)
+
+    return dx
