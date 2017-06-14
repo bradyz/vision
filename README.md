@@ -9,6 +9,17 @@ This algorithm aligns two points clouds.
 
 <img src="SLAM/screenshot.png" width="50%">
 
+### Normal Estimation
+
+To compute an estimate of a normal at each point for a point cloud -
+
+1. Take the nearest k neighbors.
+2. Compute the covariance matrix.
+
+The eigenvector with the smallest eigenvalue will be a good estimate for the normal.
+
+<img src="normal_estimation/screenshots/bunny_normals.png" width="50%">
+
 ### Style Transfer
 
 This is an optimization problem trying to find the optimal image that minimizes a loss function consisting of content loss and style loss.
