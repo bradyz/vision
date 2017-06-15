@@ -36,4 +36,4 @@ def get_labels(filename):
 
             result[path] = x
 
-    return result
+    return list(result.items())

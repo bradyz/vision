@@ -1,3 +1,6 @@
+import scipy
+import numpy as np
+
 import keras.backend as K
 
 from keras.activations import sigmoid
@@ -11,9 +14,7 @@ from keras.layers.pooling import MaxPooling2D
 from keras.applications import vgg16
 
 import config
-
-
-FEATURES = ['block1_pool', 'block2_pool', 'block3_pool',  'block4_pool']
+import helpers
 
 
 def downsample(tensor, desired_size=7):
@@ -38,7 +39,7 @@ def build():
         layer.frozen = True
 
     # Gather feature layers.
-    features = [layer for layer in vgg.layers if layer.name in FEATURES]
+    features = [layer for layer in vgg.layers if layer.name in config.FEATURES]
 
     # Use a bunch of downsampled feature maps.
     net = Concatenate()(list(map(downsample, features)))
@@ -75,5 +76,47 @@ def build():
     return model
 
 
+def load_image(image_path, fileformat='%s/%s.jpg'):
+    filename = fileformat % (config.image_dir, image_path)
+
+    # Make things better.
+    image = scipy.misc.imread(filename)
+    image = image[:,:,:3]
+    image = np.float32(image)
+    image = scipy.misc.imresize(image, config.image_shape[:-1])
+    image = vgg16.preprocess_input(image)
+
+    return image
+
+
+def batch_generator(labels, batch_size):
+    x = np.zeros([batch_size] + config.image_shape)
+    y = np.zeros([batch_size] + [config.num_classes])
+
+    while True:
+        # Load up a batch.
+        for i in range(batch_size):
+            index = np.random.randint(len(labels))
+
+            x[i] = load_image(labels[index][0])
+            y[i] = labels[index][1]
+
+        yield x, y
+
+
+def get_datagen(train_path, batch_size, validation_split=0.05):
+    labels = helpers.get_labels(train_path)
+
+    index = round(validation_split * len(labels))
+    datagen = batch_generator(labels[index:], batch_size)
+    valid_datagen = batch_generator(labels[:index], batch_size)
+
+    return datagen, valid_datagen
+
+
 if __name__ == '__main__':
     model = build()
+    datagen, valid_datagen = get_datagen(config.train_path, config.batch_size)
+
+    model.fit_generator(datagen, steps_per_epoch=1000, epochs=10,
+                        validation_data=valid_datagen, validation_steps=100)
