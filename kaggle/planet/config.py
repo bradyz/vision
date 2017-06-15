@@ -1,8 +1,9 @@
 train_path = 'train_v2.csv'
-image_dir = '/Users/bradyzhou/code/vision/kaggle/planet/train-jpg'
+image_dir = 'train-jpg'
+model_path = 'model.h5'
 
-num_classes = 18
-batch_size = 32
+num_classes = 17
+batch_size = 64
 
 image_shape = [224, 224, 3]
 
