@@ -5,7 +5,6 @@ import keras.backend as K
 
 from keras.regularizers import l2
 from keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, Callback
-from keras.activations import sigmoid
 from keras.models import Model
 from keras.optimizers import Adam
 from keras.layers.core import Lambda, Dropout, Flatten, Dense
@@ -25,7 +24,37 @@ AUGMENT = [Image.FLIP_LEFT_RIGHT, Image.FLIP_TOP_BOTTOM,
 
 
 def f_measure(p, r, beta_sq=2.0):
-    return (1.0 + beta_sq) * (p * r) / (beta_sq * p + r + K.epsilon())
+    return (1.0 + beta_sq) * (p * r) / (beta_sq * p + r)
+
+
+def print_metrics(TP, FP, FN):
+    precision = TP / (TP + FP)
+    recall = TP / (TP + FN)
+    f_score = f_measure(precision, recall)
+
+    f_score[np.logical_and(np.isnan(precision), ~np.isnan(recall))] = 0.0
+    f_score[np.isnan(recall)] = np.nan
+
+    TP_sum = TP.sum()
+    FP_sum = FP.sum()
+    FN_sum = FN.sum()
+
+    average_precision = TP_sum / (TP_sum + FP_sum)
+    average_recall = TP_sum / (TP_sum + FN_sum)
+    average_f_score = np.mean(f_score[~np.isnan(f_score)])
+
+    print()
+    print('True Positives:\n%s' % TP)
+    print('False Positives:\n%s' % FP)
+    print('False Negatives:\n%s' % FN)
+
+    print('Precision:\n%s' % precision)
+    print('Recall:\n%s' % recall)
+    print('F_score:\n%s' % f_score)
+
+    print('Precision:\t%s' % average_precision)
+    print('Recall:\t\t%s' % average_recall)
+    print('F_score:\t%s' % average_f_score)
 
 
 class MetricCallback(Callback):
@@ -51,22 +80,7 @@ class MetricCallback(Callback):
             FP += np.sum(np.logical_and(y_pred == True, y_true == False), axis=0)
             FN += np.sum(np.logical_and(y_pred == False, y_true == True), axis=0)
 
-        precision = TP / (TP + FP + K.epsilon())
-        recall = TP / (TP + FN + K.epsilon())
-        f_score = f_measure(precision, recall)
-
-        average_precision = np.mean(precision)
-        average_recall = np.mean(recall)
-        average_f_score = f_measure(TP.sum() / (TP.sum() + FP.sum() + K.epsilon()),
-                                    TP.sum() / (TP.sum() + FN.sum() + K.epsilon()))
-
-        print('Precision:\n%s' % precision)
-        print('Recall:\n%s' % recall)
-        print('F_score:\n%s' % f_score)
-
-        print('Mean Precision:\t%s' % average_precision)
-        print('Mean Recall:\t%s' % average_recall)
-        print('Mean F_score:\t%s' % average_f_score)
+        print_metrics(TP, FP, FN)
 
 
 def downsample(tensor, desired_size=7):
@@ -78,7 +92,7 @@ def downsample(tensor, desired_size=7):
     return result
 
 
-def build():
+def build(weights_path=''):
     num_classes = config.num_classes
     input_tensor = Input(shape=(224, 224, 3))
 
@@ -96,40 +110,50 @@ def build():
     # Use a bunch of downsampled feature maps.
     net = Concatenate()(list(map(downsample, features)))
 
-    # Block 1 (7 x 7 x 512).
-    net = Conv2D(512, (1, 1), padding='same')(net)
-    net = Conv2D(512, (3, 3), padding='same')(net)
+    # Block 1 (7 x 7 x 128).
+    net = Conv2D(128, (1, 1), padding='same')(net)
+    net = Conv2D(128, (3, 3), padding='same')(net)
     net = BatchNormalization()(net)
     net = Lambda(K.relu)(net)
 
-    # Block 2 (7 x 7 x 512).
-    net = Conv2D(512, (1, 1), padding='same')(net)
-    net = Conv2D(512, (3, 3), padding='same')(net)
+    # Block 2 (7 x 7 x 128).
+    net = Conv2D(128, (1, 1), padding='same')(net)
+    net = Conv2D(128, (3, 3), padding='same')(net)
     net = BatchNormalization()(net)
     net = Lambda(K.relu)(net)
 
-    # Block 3 (5 x 5 x 512).
-    net = Conv2D(512, (1, 1), padding='same')(net)
-    net = Conv2D(512, (3, 3), strides=(2, 2), padding='same')(net)
+    # Block 3 (5 x 5 x 128).
+    net = Conv2D(128, (1, 1), padding='same')(net)
+    net = Conv2D(128, (3, 3), strides=(2, 2), padding='same')(net)
     net = BatchNormalization()(net)
     net = Lambda(K.relu)(net)
 
-    # Block 4 (1 x 1 x 17).
-    net = Conv2D(512, (1, 1), padding='same')(net)
-    net = Conv2D(256, (3, 3), strides=(2, 2), padding='valid')(net)
+    # Block 4 (1 x 1 x 128).
+    net = Conv2D(128, (1, 1), padding='same')(net)
+    net = Conv2D(128, (3, 3), strides=(2, 2), padding='valid')(net)
 
-    # Block 5 predictions.
+    # Block 5.
     net = Flatten()(net)
-    net = Dense(256, activation='relu', kernel_regularizer=l2(1e-4))(net)
+    net = Dense(128, kernel_regularizer=l2(5e-4))(net)
+    net = BatchNormalization()(net)
+    net = Lambda(K.relu)(net)
+
+    # Block 6.
     net = Dropout(0.5)(net)
-    net = Dense(256, activation='relu', kernel_regularizer=l2(1e-4))(net)
+    net = Dense(128, kernel_regularizer=l2(5e-4))(net)
+    net = BatchNormalization()(net)
+    net = Lambda(K.relu)(net)
+
+    # Block 7.
     net = Dropout(0.5)(net)
-    net = Dense(num_classes, kernel_regularizer=l2(1e-4))(net)
-    net = Lambda(K.sigmoid)(net)
+    net = Dense(num_classes, kernel_regularizer=l2(5e-4))(net)
 
     # Pack it up in a model.
     model = Model(inputs=[input_tensor], outputs=[net])
-    model.compile(Adam(1e-3), 'categorical_crossentropy')
+    model.compile(Adam(1e-3), 'binary_crossentropy', metrics=['accuracy'])
+
+    if weights_path:
+        model.load_weights(weights_path)
 
     return model
 
@@ -174,7 +198,7 @@ def batch_generator(labels, batch_size):
         yield x, y
 
 
-def get_datagen(train_path, batch_size, validation_split=0.15):
+def get_datagen(train_path, batch_size, validation_split=0.2):
     labels = helpers.get_labels(train_path)
     np.random.shuffle(labels)
 
@@ -186,17 +210,20 @@ def get_datagen(train_path, batch_size, validation_split=0.15):
 
 
 if __name__ == '__main__':
-    np.random.seed(0)
+    np.random.seed(1)
     np.set_printoptions(precision=3)
 
     model = build()
     datagen, valid_datagen = get_datagen(config.train_path, config.batch_size)
 
+    validation_steps = 100
+
     callbacks = list()
     callbacks.append(ModelCheckpoint(config.model_path))
-    callbacks.append(ReduceLROnPlateau(factor=0.1, patience=0, verbose=1, epsilon=0.1))
-    callbacks.append(MetricCallback(model, valid_datagen, 100))
+    callbacks.append(ReduceLROnPlateau(factor=0.5, patience=0, verbose=1, epsilon=0.01))
+    callbacks.append(MetricCallback(model, datagen, validation_steps))
 
-    model.fit_generator(datagen, steps_per_epoch=1000, epochs=10,
-                        validation_data=valid_datagen, validation_steps=100,
+    model.fit_generator(datagen, steps_per_epoch=500, epochs=25,
+                        validation_data=valid_datagen,
+                        validation_steps=validation_steps,
                         callbacks=callbacks)

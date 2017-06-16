@@ -25,7 +25,7 @@ def get_labels(filename):
     class_names = get_classes(filename)
     n = len(class_names)
 
-    result = dict()
+    result = list()
 
     with open(filename, 'r') as csvfile:
         for path, class_labels in csv.reader(csvfile):
@@ -34,6 +34,6 @@ def get_labels(filename):
             for class_name in class_labels.split(' '):
                 x += to_one_hot(class_name, class_names)
 
-            result[path] = x
+            result.append((path, x))
 
-    return list(result.items())
+    return result
