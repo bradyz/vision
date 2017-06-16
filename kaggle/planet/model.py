@@ -3,10 +3,12 @@ import numpy as np
 
 import keras.backend as K
 
+from keras.regularizers import l2
+from keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, Callback
 from keras.activations import sigmoid
 from keras.models import Model
 from keras.optimizers import Adam
-from keras.layers.core import Lambda, Dropout
+from keras.layers.core import Lambda, Dropout, Flatten, Dense
 from keras.layers import Input, Conv2D
 from keras.layers.merge import Concatenate
 from keras.layers.normalization import BatchNormalization
@@ -20,6 +22,51 @@ import helpers
 AUGMENT = [Image.FLIP_LEFT_RIGHT, Image.FLIP_TOP_BOTTOM,
            Image.ROTATE_90, Image.ROTATE_180, Image.ROTATE_270,
            Image.TRANSPOSE]
+
+
+def f_measure(p, r, beta_sq=2.0):
+    return (1.0 + beta_sq) * (p * r) / (beta_sq * p + r + K.epsilon())
+
+
+class MetricCallback(Callback):
+    def __init__(self, model, valid_datagen, steps):
+        self.model = model
+        self.valid_datagen = valid_datagen
+        self.steps = steps
+
+    def on_epoch_end(self, epoch, logs={}):
+        TP = np.zeros(config.num_classes)
+        FP = np.zeros(config.num_classes)
+        FN = np.zeros(config.num_classes)
+
+        for i, x_y in enumerate(self.valid_datagen):
+            if i == self.steps:
+                break
+
+            x = x_y[0]
+            y_true = np.round(x_y[1]).astype('bool')
+            y_pred = np.round(self.model.predict_on_batch(x)).astype('bool')
+
+            TP += np.sum(np.logical_and(y_pred == True, y_true == True), axis=0)
+            FP += np.sum(np.logical_and(y_pred == True, y_true == False), axis=0)
+            FN += np.sum(np.logical_and(y_pred == False, y_true == True), axis=0)
+
+        precision = TP / (TP + FP + K.epsilon())
+        recall = TP / (TP + FN + K.epsilon())
+        f_score = f_measure(precision, recall)
+
+        average_precision = np.mean(precision)
+        average_recall = np.mean(recall)
+        average_f_score = f_measure(TP.sum() / (TP.sum() + FP.sum() + K.epsilon()),
+                                    TP.sum() / (TP.sum() + FN.sum() + K.epsilon()))
+
+        print('Precision:\n%s' % precision)
+        print('Recall:\n%s' % recall)
+        print('F_score:\n%s' % f_score)
+
+        print('Mean Precision:\t%s' % average_precision)
+        print('Mean Recall:\t%s' % average_recall)
+        print('Mean F_score:\t%s' % average_f_score)
 
 
 def downsample(tensor, desired_size=7):
@@ -49,38 +96,40 @@ def build():
     # Use a bunch of downsampled feature maps.
     net = Concatenate()(list(map(downsample, features)))
 
-    # Block 1 (7 x 7 x k).
-    net = Dropout(.25)(net)
+    # Block 1 (7 x 7 x 512).
     net = Conv2D(512, (1, 1), padding='same')(net)
     net = Conv2D(512, (3, 3), padding='same')(net)
     net = BatchNormalization()(net)
     net = Lambda(K.relu)(net)
 
-    # Block 2 (7 x 7 x k).
+    # Block 2 (7 x 7 x 512).
     net = Conv2D(512, (1, 1), padding='same')(net)
     net = Conv2D(512, (3, 3), padding='same')(net)
     net = BatchNormalization()(net)
     net = Lambda(K.relu)(net)
 
-    # Block 3 (5 x 5 x K).
+    # Block 3 (5 x 5 x 512).
     net = Conv2D(512, (1, 1), padding='same')(net)
     net = Conv2D(512, (3, 3), strides=(2, 2), padding='same')(net)
     net = BatchNormalization()(net)
     net = Lambda(K.relu)(net)
 
-    # Block 4.
+    # Block 4 (1 x 1 x 17).
     net = Conv2D(512, (1, 1), padding='same')(net)
-    net = Dropout(.25)(net)
-    net = Conv2D(num_classes, (3, 3), strides=(2, 2), padding='valid')(net)
-    net = Lambda(sigmoid)(net)
-    net = Lambda(lambda x: K.squeeze(x, 1))(net)
-    net = Lambda(lambda x: K.squeeze(x, 1))(net)
+    net = Conv2D(256, (3, 3), strides=(2, 2), padding='valid')(net)
+
+    # Block 5 predictions.
+    net = Flatten()(net)
+    net = Dense(256, activation='relu', kernel_regularizer=l2(1e-4))(net)
+    net = Dropout(0.5)(net)
+    net = Dense(256, activation='relu', kernel_regularizer=l2(1e-4))(net)
+    net = Dropout(0.5)(net)
+    net = Dense(num_classes, kernel_regularizer=l2(1e-4))(net)
+    net = Lambda(K.sigmoid)(net)
 
     # Pack it up in a model.
-    optimizer = Adam(1e-3, decay=5e-5)
-
     model = Model(inputs=[input_tensor], outputs=[net])
-    model.compile(optimizer, 'categorical_crossentropy', metrics=['accuracy'])
+    model.compile(Adam(1e-3), 'categorical_crossentropy')
 
     return model
 
@@ -138,10 +187,16 @@ def get_datagen(train_path, batch_size, validation_split=0.15):
 
 if __name__ == '__main__':
     np.random.seed(0)
+    np.set_printoptions(precision=3)
 
     model = build()
     datagen, valid_datagen = get_datagen(config.train_path, config.batch_size)
 
-    model.fit_generator(datagen, steps_per_epoch=10000, epochs=10,
-                        validation_data=valid_datagen, validation_steps=1000)
-    model.save(config.model_path)
+    callbacks = list()
+    callbacks.append(ModelCheckpoint(config.model_path))
+    callbacks.append(ReduceLROnPlateau(factor=0.1, patience=0, verbose=1, epsilon=0.1))
+    callbacks.append(MetricCallback(model, valid_datagen, 100))
+
+    model.fit_generator(datagen, steps_per_epoch=1000, epochs=10,
+                        validation_data=valid_datagen, validation_steps=100,
+                        callbacks=callbacks)
