@@ -1,11 +1,9 @@
-import sys
-
 from tensorflow.examples.tutorials.mnist import input_data
 
 import numpy as np
 
 from keras.applications.vgg16 import VGG16
-from keras.callbacks import CSVLogger, ModelCheckpoint, ReduceLROnPlateau
+from keras.callbacks import CSVLogger, ModelCheckpoint, ReduceLROnPlateau, TensorBoard
 from keras.layers import Convolution2D, MaxPooling2D
 from keras.layers import Dense, Dropout, Activation, Flatten, Input
 from keras.models import Sequential, Model
@@ -25,7 +23,7 @@ def load_model(used_saved=False):
                             input_shape=(IMAGE_SIZE, IMAGE_SIZE, 1),
                             name='conv1'))
     model.add(Activation('relu', name='relu1'))
-    model.add(Convolution2D(16, 2, 2, border_mode='same', name='conv2'))
+    model.add(Convolution2D(32, 2, 2, border_mode='same', name='conv2'))
     model.add(Activation('relu', name='relu2'))
     model.add(MaxPooling2D(pool_size=(2, 2), name='pool2'))
     model.add(Flatten(name='flatten2'))
@@ -41,36 +39,64 @@ def load_model(used_saved=False):
     return model
 
 
-def train(model):
+def get_datagen(n, batch_size=32, train=True, vgg=False):
     data = input_data.read_data_sets('MNIST_data/', one_hot=True)
 
+    if train:
+        source = data.train
+    else:
+        source = data.validation
+
+    x = source.images[:n]
+    x = np.reshape(x, (len(x), IMAGE_SIZE, IMAGE_SIZE, 1))
+
+    if vgg:
+        x = helpers.convert_greyscale_to_rgb(x)
+        x = helpers.resize_dataset(x, 224, 224)
+
+    y = source.labels[:n]
+
+    # Batchwise generator.
+    x_batch = np.zeros([batch_size, IMAGE_SIZE, IMAGE_SIZE, 1])
+    y_batch = np.zeros([batch_size, 10])
+
+    while True:
+        index = 0
+
+        for i in range(batch_size):
+            x_batch[i] = x[index]
+            y_batch[i] = y[index]
+
+            index = (index + 1) % n
+
+        yield x_batch, y_batch
+
+
+def train(model):
     model.compile(loss='categorical_crossentropy',
                   optimizer="adadelta",
                   metrics=['accuracy'])
 
-    x_train = data.train.images[:1000]
-    x_train = np.reshape(x_train, (len(x_train), IMAGE_SIZE, IMAGE_SIZE, 1))
-    x_train = helpers.convert_greyscale_to_rgb(x_train)
-    x_train = helpers.resize_dataset(x_train, 224, 224)
-
-    y_train = data.train.labels[:1000]
-
-    x_valid = data.validation.images[:100]
-    x_valid = np.reshape(x_valid, (len(x_valid), IMAGE_SIZE, IMAGE_SIZE, 1))
-    x_valid = helpers.convert_greyscale_to_rgb(x_valid)
-    x_valid = helpers.resize_dataset(x_valid, 224, 224)
-
-    y_valid = data.validation.labels[:100]
+    datagen = get_datagen(1000, 32)
+    datagen_val = get_datagen(100, 32, train=False)
 
     checkpointer = ModelCheckpoint(filepath=SAVE_FILE, verbose=1)
     csv_logger = CSVLogger(LOG_FILE)
     reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5,
                                   patience=2, min_lr=0.001)
     debugger = helpers.ManualInspection(model)
+    tensorboard = TensorBoard(histogram_freq=1,
+                              write_grads=True,
+                              write_images=True)
 
-    model.fit(x_train, y_train, batch_size=32, nb_epoch=20, verbose=1,
-              validation_data=(x_valid, y_valid),
-              callbacks=[checkpointer, csv_logger, reduce_lr, debugger])
+    model.fit_generator(datagen,
+                        steps_per_epoch=100, epochs=100,
+                        validation_data=datagen_val, validation_steps=10,
+                        callbacks=[checkpointer,
+                                   csv_logger,
+                                   reduce_lr,
+                                   debugger,
+                                   tensorboard])
 
     model.save_weights(SAVE_FILE)
     return
@@ -116,6 +142,6 @@ def load_model_vgg():
 
 
 if __name__ == "__main__":
-    model = load_model_vgg()
+    model = load_model()
 
     train(model)
