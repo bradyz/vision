@@ -1,18 +1,20 @@
 from PIL import Image
 import numpy as np
 
+from sklearn.metrics import fbeta_score
+
 import keras.backend as K
 
 from keras.regularizers import l2
 from keras.layers.merge import add
-from keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, Callback
+from keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, Callback, TensorBoard
 from keras.models import Model
 from keras.optimizers import Adam
 from keras.layers.core import Lambda, Dropout, Flatten, Dense
 from keras.layers import Input, Conv2D
 from keras.layers.merge import Concatenate
 from keras.layers.normalization import BatchNormalization
-from keras.layers.pooling import MaxPooling2D
+from keras.layers.pooling import AveragePooling2D
 from keras.applications import vgg16
 
 import config
@@ -70,27 +72,38 @@ class MetricCallback(Callback):
         FP = np.zeros(config.num_classes, dtype=np.int32)
         FN = np.zeros(config.num_classes, dtype=np.int32)
 
+        fbeta = np.zeros(config.num_classes)
+        mean_fbeta = 0
+        total = 0
+
         for i, x_y in enumerate(self.valid_datagen):
             if i == self.steps:
                 break
 
-            x = x_y[0]
             y_true = np.round(x_y[1]).astype('bool')
-            y_pred = np.round(self.model.predict_on_batch(x)).astype('bool')
+            y_pred = np.round(self.model.predict_on_batch(x_y[0])).astype('bool')
 
             TP += np.sum(np.logical_and(y_pred == True, y_true == True), axis=0)
             FP += np.sum(np.logical_and(y_pred == True, y_true == False), axis=0)
             FN += np.sum(np.logical_and(y_pred == False, y_true == True), axis=0)
 
+            total += 1
+            fbeta = (total - 1.0) / total * fbeta + \
+                    1.0 / total * fbeta_score(y_true, y_pred, beta=2, average=None)
+            mean_fbeta = (total - 1.0) / total * mean_fbeta + \
+                    1.0 / total * fbeta_score(y_true, y_pred, beta=2, average='samples')
+
         print_metrics(TP, FP, FN)
+        print(fbeta, mean_fbeta)
 
 
 def downsample(tensor, desired_size=7):
     result = tensor.output
 
     while result.shape.as_list()[1] > desired_size:
-        result = Conv2D(256, (3, 3), activation='relu',
-                        strides=(2, 2), padding='same')(result)
+        result = Conv2D(256, (3, 3), strides=(2, 2), padding='same')(result)
+        result = BatchNormalization()(result)
+        result = Lambda(K.relu)(result)
 
     return result
 
@@ -112,54 +125,59 @@ def build(weights_path=''):
 
     # Use a bunch of downsampled feature maps.
     net = Concatenate()(list(map(downsample, features)))
+    net = BatchNormalization()(net)
 
     # Block 1.
-    block1_1 = Conv2D(512, (1, 1), padding='same')(net)
-    block1_2 = Conv2D(512, (3, 3), padding='same')(block1_1)
-    block1_3 = BatchNormalization()(block1_2)
-    block1_4 = Lambda(K.relu)(block1_3)
+    block1_a = Conv2D(256, (1, 1), padding='same')(net)
 
-    # Block 2 Inception V4.
-    block2_1 = Conv2D(512, (1, 1), padding='same')(block1_4)
-    block2_2 = Conv2D(512, (3, 3), padding='same')(block2_1)
-    block2_3 = Lambda(lambda x: 0.2 * x)(block2_2)
-    block2_4 = add([block1_4, block2_3])
-    block2_5 = BatchNormalization()(block2_4)
-    block2_6 = Lambda(K.relu)(block2_5)
+    block1_b = Conv2D(64, (1, 1), padding='same')(block1_a)
+    block1_b = BatchNormalization()(block1_b)
+    block1_b = Lambda(K.relu)(block1_b)
+
+    block1_b = Conv2D(64, (3, 3), padding='same')(block1_b)
+    block1_b = BatchNormalization()(block1_b)
+    block1_b = Lambda(K.relu)(block1_b)
+
+    block1_b = Conv2D(256, (1, 1), padding='same')(block1_b)
+    block1_b = Lambda(lambda x: 0.2 * x)(block1_b)
+
+    block1_c = add([block1_a, block1_b])
+    block1_c = BatchNormalization()(block1_c)
+    block1_c = Lambda(K.relu)(block1_c)
+
+    # Block 2.
+    block2_a = Conv2D(64, (1, 1), padding='same')(block1_c)
+    block2_a = BatchNormalization()(block2_a)
+    block2_a = Lambda(K.relu)(block2_a)
+
+    block2_a = Conv2D(64, (3, 3), padding='same')(block2_a)
+    block2_a = BatchNormalization()(block2_a)
+    block2_a = Lambda(K.relu)(block2_a)
+
+    block2_a = Conv2D(256, (1, 1), padding='same')(block2_a)
+    block2_a = Lambda(lambda x: 0.2 * x)(block2_a)
+
+    block2_b = add([block1_c, block2_a])
+    block2_b = BatchNormalization()(block2_b)
+    block2_b = Lambda(K.relu)(block2_b)
+    block2_b = AveragePooling2D((5, 5), padding='valid')(block2_b)
 
     # Block 3.
-    block3_1 = Conv2D(512, (1, 1), padding='same')(block2_6)
-    block3_2 = Conv2D(512, (3, 3), strides=(2, 2), padding='same')(block3_1)
-    block3_3 = BatchNormalization()(block3_2)
-    block3_4 = Lambda(K.relu)(block3_3)
+    block3_a = Dropout(0.5)(block2_b)
+    block3_a = Conv2D(256, (1, 1), padding='same',
+                      kernel_regularizer=l2(5e-5))(block3_a)
+    block3_a = BatchNormalization()(block3_a)
+    block3_a = Lambda(K.relu)(block3_a)
 
     # Block 4.
-    block4_1 = Conv2D(256, (1, 1), padding='same')(block3_4)
-    block4_2 = Conv2D(256, (3, 3), strides=(2, 2), padding='valid')(block4_1)
-    block4_3 = BatchNormalization()(block4_2)
-    block4_4 = Lambda(K.relu)(block4_3)
-
-    # Block 5.
-    block5_1 = Flatten()(block4_4)
-    block5_2 = Dropout(0.5)(block5_1)
-    block5_3 = Dense(256, kernel_regularizer=l2(5e-4))(block5_2)
-    block5_4 = BatchNormalization()(block5_3)
-    block5_5 = Lambda(K.relu)(block5_4)
-
-    # Block 6.
-    block6_1 = Dropout(0.5)(block5_5)
-    block6_2 = Dense(256, kernel_regularizer=l2(5e-4))(block6_1)
-    block6_3 = BatchNormalization()(block6_2)
-    block6_4 = Lambda(K.relu)(block6_3)
-
-    # Block 7.
-    block7_1 = Dropout(0.5)(block6_4)
-    block7_2 = Dense(num_classes, activation='sigmoid',
-                     kernel_regularizer=l2(5e-4))(block7_1)
+    block4_a = Flatten()(block3_a)
+    block4_a = Dropout(0.5)(block4_a)
+    block4_a = Dense(num_classes, activation='sigmoid',
+                     kernel_regularizer=l2(5e-5))(block4_a)
 
     # Pack it up in a model.
-    model = Model(inputs=[input_tensor], outputs=[block7_2])
-    model.compile(Adam(1e-3), 'binary_crossentropy', metrics=['accuracy'])
+    model = Model(inputs=[input_tensor], outputs=[block4_a])
+    model.compile(Adam(lr=1e-4), 'binary_crossentropy', metrics=['accuracy'])
 
     if weights_path:
         model.load_weights(weights_path)
@@ -184,9 +202,20 @@ def load_image(image_path, augment=True, fileformat='%s/%s.jpg'):
     image = image[:,:,:3]
 
     if augment:
-        image += np.random.randn(*image.shape)
+        image += 10.0 * np.random.randn(*image.shape)
 
     return image
+
+
+def valid_pick(one_hot, seen):
+    want = [0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16]
+
+    for i in want:
+        if one_hot[i] > 0.0 and (i not in seen or len(seen) == len(want)):
+            seen.add(i)
+            return True
+
+    return False
 
 
 def batch_generator(labels, batch_size):
@@ -196,10 +225,17 @@ def batch_generator(labels, batch_size):
     index = 0
 
     while True:
+        seen = set()
+
         # Load up a batch.
         for i in range(batch_size):
-            # index = np.random.randint(len(labels))
-            index = (index + 1) % len(labels)
+            index = np.random.randint(len(labels))
+            # index = (index + 1) % len(labels)
+
+            # Force less common labels.
+            while not valid_pick(labels[index][1], seen):
+                # index = (index + 1) % len(labels)
+                index = np.random.randint(len(labels))
 
             x[i] = load_image(labels[index][0])
             y[i] = labels[index][1]
@@ -227,32 +263,30 @@ def get_class_weight(train_path):
     for _, y in helpers.get_labels(train_path):
         counts += y
 
-    print(counts / np.sum(counts))
-
     return 1.0 / (counts / np.sum(counts))
 
 
 if __name__ == '__main__':
-    np.random.seed(1)
+    np.random.seed(0)
     np.set_printoptions(precision=2)
 
     model = build()
     datagen, valid_datagen = get_datagen(config.train_path, config.batch_size)
-    class_weight = get_class_weight(config.train_path)
+    class_weight = np.log(get_class_weight(config.train_path))
 
-    print(class_weight)
-
-    validation_steps = 100
+    train_steps = 500
+    validation_steps = 50
+    num_epochs = 100
 
     callbacks = list()
-    callbacks.append(ModelCheckpoint(config.model_path))
-    callbacks.append(ReduceLROnPlateau(factor=0.5, patience=0, verbose=1, epsilon=0.01))
-    callbacks.append(MetricCallback(model, datagen, validation_steps))
+    callbacks.append(ModelCheckpoint(config.model_path, verbose=1))
+    callbacks.append(ReduceLROnPlateau(factor=0.5, patience=1, verbose=1, epsilon=0.01))
+    callbacks.append(MetricCallback(model, valid_datagen, validation_steps))
+    callbacks.append(TensorBoard(write_graph=False))
 
-    model.fit_generator(datagen, steps_per_epoch=500, epochs=25,
+    model.fit_generator(datagen,
+                        steps_per_epoch=train_steps, epochs=num_epochs,
                         validation_data=valid_datagen,
                         validation_steps=validation_steps,
                         callbacks=callbacks,
                         class_weight=class_weight)
-
-    import pdb; pdb.set_trace()
