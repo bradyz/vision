@@ -6,15 +6,14 @@ from sklearn.metrics import fbeta_score
 import keras.backend as K
 
 from keras.regularizers import l2
-from keras.layers.merge import add
 from keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, Callback, TensorBoard
 from keras.models import Model
-from keras.optimizers import Adam
+from keras.optimizers import SGD, Adam
 from keras.layers.core import Lambda, Dropout, Flatten, Dense
 from keras.layers import Input, Conv2D
 from keras.layers.merge import Concatenate
 from keras.layers.normalization import BatchNormalization
-from keras.layers.pooling import AveragePooling2D
+from keras.layers.pooling import AveragePooling2D, MaxPooling2D
 from keras.applications import vgg16
 
 import config
@@ -98,12 +97,14 @@ class MetricCallback(Callback):
 
 
 def downsample(tensor, desired_size=7):
-    result = tensor.output
+    result = tensor
 
     while result.shape.as_list()[1] > desired_size:
-        result = Conv2D(256, (3, 3), strides=(2, 2), padding='same')(result)
+        # result = AveragePooling2D((3, 3), strides=(2, 2), padding='same')(result)
+        result = Conv2D(64, (3, 3), padding='same')(result)
         result = BatchNormalization()(result)
         result = Lambda(K.relu)(result)
+        result = MaxPooling2D()(result)
 
     return result
 
@@ -121,16 +122,20 @@ def build(weights_path=''):
         layer.frozen = True
 
     # Gather feature layers.
-    features = [layer for layer in vgg.layers if layer.name in config.FEATURES]
+    features = [layer.output for layer in vgg.layers if layer.name in config.FEATURES]
+    features += [input_tensor]
 
     # Use a bunch of downsampled feature maps.
     net = Concatenate()(list(map(downsample, features)))
-    net = BatchNormalization()(net)
 
-    # Block 1.
-    block1_a = Conv2D(256, (1, 1), padding='same')(net)
+    # Block 1, Inception + concat.
+    block1_a = net
+    block1_a = Conv2D(128, (1, 1), padding='same')(block1_a)
+    block1_a = BatchNormalization()(block1_a)
+    block1_a = Lambda(K.relu)(block1_a)
 
-    block1_b = Conv2D(64, (1, 1), padding='same')(block1_a)
+    block1_b = block1_a
+    block1_b = Conv2D(64, (1, 1), padding='same')(block1_b)
     block1_b = BatchNormalization()(block1_b)
     block1_b = Lambda(K.relu)(block1_b)
 
@@ -138,15 +143,16 @@ def build(weights_path=''):
     block1_b = BatchNormalization()(block1_b)
     block1_b = Lambda(K.relu)(block1_b)
 
-    block1_b = Conv2D(256, (1, 1), padding='same')(block1_b)
-    block1_b = Lambda(lambda x: 0.2 * x)(block1_b)
+    block1_b = Conv2D(128, (1, 1), padding='same')(block1_b)
+    block1_b = BatchNormalization()(block1_b)
+    block1_b = Lambda(K.relu)(block1_b)
+    block1_b = Lambda(lambda x: 0.5 * x)(block1_b)
 
-    block1_c = add([block1_a, block1_b])
-    block1_c = BatchNormalization()(block1_c)
-    block1_c = Lambda(K.relu)(block1_c)
+    block1_c = Concatenate()([block1_a, block1_b])
 
-    # Block 2.
-    block2_a = Conv2D(64, (1, 1), padding='same')(block1_c)
+    # Block 2, Inception + concat + densenet.
+    block2_a = block1_c
+    block2_a = Conv2D(64, (1, 1), padding='same')(block2_a)
     block2_a = BatchNormalization()(block2_a)
     block2_a = Lambda(K.relu)(block2_a)
 
@@ -154,30 +160,46 @@ def build(weights_path=''):
     block2_a = BatchNormalization()(block2_a)
     block2_a = Lambda(K.relu)(block2_a)
 
-    block2_a = Conv2D(256, (1, 1), padding='same')(block2_a)
-    block2_a = Lambda(lambda x: 0.2 * x)(block2_a)
+    block2_a = Conv2D(128, (3, 3), padding='same')(block2_a)
+    block2_a = Lambda(lambda x: 0.5 * x)(block2_a)
 
-    block2_b = add([block1_c, block2_a])
-    block2_b = BatchNormalization()(block2_b)
-    block2_b = Lambda(K.relu)(block2_b)
-    block2_b = AveragePooling2D((5, 5), padding='valid')(block2_b)
+    block2_b = Concatenate()([block1_c, block2_a])
 
-    # Block 3.
-    block3_a = Dropout(0.5)(block2_b)
-    block3_a = Conv2D(256, (1, 1), padding='same',
-                      kernel_regularizer=l2(5e-5))(block3_a)
+    # Block 3, 3x3 convs to get to 1x1x256.
+    block3_a = block2_b
+
+    block3_a = Conv2D(128, (1, 1), padding='valid')(block3_a)
     block3_a = BatchNormalization()(block3_a)
     block3_a = Lambda(K.relu)(block3_a)
 
-    # Block 4.
-    block4_a = Flatten()(block3_a)
+    block3_a = Conv2D(128, (3, 3), padding='valid')(block3_a)
+    block3_a = BatchNormalization()(block3_a)
+    block3_a = Lambda(K.relu)(block3_a)
+
+    block3_a = Conv2D(64, (3, 3), padding='valid')(block3_a)
+    block3_a = BatchNormalization()(block3_a)
+    block3_a = Lambda(K.relu)(block3_a)
+
+    block3_a = Conv2D(32, (3, 3), padding='valid')(block3_a)
+    block3_a = BatchNormalization()(block3_a)
+    block3_a = Lambda(K.relu)(block3_a)
+
+    # Block 4, FC conv layer.
+    block4_a = block3_a
     block4_a = Dropout(0.5)(block4_a)
-    block4_a = Dense(num_classes, activation='sigmoid',
-                     kernel_regularizer=l2(5e-5))(block4_a)
+    block4_a = Conv2D(512, (1, 1), padding='same')(block4_a)
+    block4_a = BatchNormalization()(block4_a)
+    block4_a = Lambda(K.relu)(block4_a)
+
+    # Block 5, FC conv layer.
+    block5_a = block4_a
+    block5_a = Dropout(0.5)(block5_a)
+    block5_a = Conv2D(num_classes, (1, 1), padding='same', activation='sigmoid')(block5_a)
+    block5_a = Flatten()(block5_a)
 
     # Pack it up in a model.
-    model = Model(inputs=[input_tensor], outputs=[block4_a])
-    model.compile(Adam(lr=1e-4), 'binary_crossentropy', metrics=['accuracy'])
+    model = Model(inputs=[input_tensor], outputs=[block5_a])
+    model.compile(Adam(lr=2e-6), 'binary_crossentropy', metrics=['accuracy'])
 
     if weights_path:
         model.load_weights(weights_path)
@@ -207,35 +229,55 @@ def load_image(image_path, augment=True, fileformat='%s/%s.jpg'):
     return image
 
 
-def valid_pick(one_hot, seen):
-    want = [0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16]
-
-    for i in want:
-        if one_hot[i] > 0.0 and (i not in seen or len(seen) == len(want)):
-            seen.add(i)
-            return True
-
-    return False
-
-
-def batch_generator(labels, batch_size):
+def batch_generator(labels, batch_size, weighted=False):
     x = np.zeros([batch_size] + config.image_shape)
     y = np.zeros([batch_size] + [config.num_classes])
 
-    index = 0
+    if weighted:
+        # Sample inversely proportional to data frequency.
+        class_weight = np.log(get_class_weight(labels))
+        # class_weight = np.ones(config.num_classes)
+        class_weight = class_weight / np.sum(class_weight) * batch_size
+        class_weight = np.int32(class_weight)
+
+        # Rounding errors, balance out the rest.
+        while np.sum(class_weight) < batch_size:
+            min_i = 0
+
+            # Look for least represented.
+            for i in range(class_weight.shape[0]):
+                if class_weight[i] < class_weight[min_i]:
+                    min_i = i
+
+            class_weight[min_i] += 1
+
+        # Make sure we have enough for a batch.
+        assert np.sum(class_weight) == batch_size
+
+        print(class_weight)
 
     while True:
-        seen = set()
+        index = 0
+
+        if weighted:
+            # Times each class has been seen.
+            class_counts = np.zeros(class_weight.shape[0])
+            class_index = 0
 
         # Load up a batch.
         for i in range(batch_size):
             index = np.random.randint(len(labels))
-            # index = (index + 1) % len(labels)
 
-            # Force less common labels.
-            while not valid_pick(labels[index][1], seen):
-                # index = (index + 1) % len(labels)
-                index = np.random.randint(len(labels))
+            if weighted:
+                # Keep looking for the right class.
+                while labels[index][1][class_index] == 0.0:
+                    index = np.random.randint(len(labels))
+
+                class_counts[class_index] += 1
+
+                # Sufficiently found enough of the class.
+                if class_counts[class_index] >= class_weight[class_index]:
+                    class_index = (class_index + 1) % class_weight.shape[0]
 
             x[i] = load_image(labels[index][0])
             y[i] = labels[index][1]
@@ -251,16 +293,16 @@ def get_datagen(train_path, batch_size, validation_split=0.2):
     np.random.shuffle(labels)
 
     index = round(validation_split * len(labels))
-    datagen = batch_generator(labels[index:], batch_size)
+    datagen = batch_generator(labels[index:], batch_size, True)
     valid_datagen = batch_generator(labels[:index], batch_size)
 
     return datagen, valid_datagen
 
 
-def get_class_weight(train_path):
+def get_class_weight(labels):
     counts = np.zeros(config.num_classes)
 
-    for _, y in helpers.get_labels(train_path):
+    for _, y in labels:
         counts += y
 
     return 1.0 / (counts / np.sum(counts))
@@ -272,7 +314,7 @@ if __name__ == '__main__':
 
     model = build()
     datagen, valid_datagen = get_datagen(config.train_path, config.batch_size)
-    class_weight = np.log(get_class_weight(config.train_path))
+    class_weight = get_class_weight(helpers.get_labels(config.train_path))
 
     train_steps = 500
     validation_steps = 50
