@@ -7,4 +7,4 @@ batch_size = 64
 
 image_shape = [224, 224, 3]
 
-FEATURES = ['block1_pool', 'block2_pool', 'block3_pool',  'block4_pool']
+FEATURES = ['block2_pool', 'block3_pool', 'block4_conv3', 'block5_conv3']

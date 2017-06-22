@@ -1,19 +1,17 @@
 from PIL import Image
 import numpy as np
 
-from sklearn.metrics import fbeta_score
-
 import keras.backend as K
 
 from keras.regularizers import l2
 from keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, Callback, TensorBoard
 from keras.models import Model
-from keras.optimizers import SGD, Adam
+from keras.optimizers import Adam
 from keras.layers.core import Lambda, Dropout, Flatten, Dense
 from keras.layers import Input, Conv2D
 from keras.layers.merge import Concatenate
 from keras.layers.normalization import BatchNormalization
-from keras.layers.pooling import AveragePooling2D, MaxPooling2D
+from keras.layers.pooling import MaxPooling2D
 from keras.applications import vgg16
 
 import config
@@ -38,25 +36,12 @@ def print_metrics(TP, FP, FN):
     f_score[~np.isfinite(f_score)] = 0.0
     f_score[~np.isfinite(recall)] = np.nan
 
-    TP_sum = TP.sum()
-    FP_sum = FP.sum()
-    FN_sum = FN.sum()
-
-    average_precision = TP_sum / (TP_sum + FP_sum)
-    average_recall = TP_sum / (TP_sum + FN_sum)
     average_f_score = np.mean(f_score[np.isfinite(f_score)])
 
     print()
-    print('True Positives:\n%s' % TP)
-    print('False Positives:\n%s' % FP)
-    print('False Negatives:\n%s' % FN)
-
     print('Precision:\n%s' % precision)
     print('Recall:\n%s' % recall)
     print('F_score:\n%s' % f_score)
-
-    print('Precision:\t%s' % average_precision)
-    print('Recall:\t\t%s' % average_recall)
     print('F_score:\t%s' % average_f_score)
 
 
@@ -71,10 +56,6 @@ class MetricCallback(Callback):
         FP = np.zeros(config.num_classes, dtype=np.int32)
         FN = np.zeros(config.num_classes, dtype=np.int32)
 
-        fbeta = np.zeros(config.num_classes)
-        mean_fbeta = 0
-        total = 0
-
         for i, x_y in enumerate(self.valid_datagen):
             if i == self.steps:
                 break
@@ -86,22 +67,38 @@ class MetricCallback(Callback):
             FP += np.sum(np.logical_and(y_pred == True, y_true == False), axis=0)
             FN += np.sum(np.logical_and(y_pred == False, y_true == True), axis=0)
 
-            total += 1
-            fbeta = (total - 1.0) / total * fbeta + \
-                    1.0 / total * fbeta_score(y_true, y_pred, beta=2, average=None)
-            mean_fbeta = (total - 1.0) / total * mean_fbeta + \
-                    1.0 / total * fbeta_score(y_true, y_pred, beta=2, average='samples')
-
         print_metrics(TP, FP, FN)
-        print(fbeta, mean_fbeta)
+
+
+def weighted_loss(weighted=True, alpha=1.0):
+    def loss(y_true, y_pred):
+        left = y_true * K.log(y_pred + K.epsilon())
+        right = (1.0 - y_true) * K.log(1.0 - y_pred + K.epsilon())
+
+        log_loss = K.mean(left, axis=0) + weights * K.mean(right, axis=0)
+
+        return K.mean(-1.0 * log_loss)
+
+    if weighted:
+        weights = np.log(get_class_weight(helpers.get_labels(config.train_path)))
+    else:
+        weights = np.ones(config.num_classes)
+
+    weights = alpha * weights
+
+    return loss
 
 
 def downsample(tensor, desired_size=7):
     result = tensor
 
+    if result.shape.as_list()[1] > desired_size:
+        result = Conv2D(32, (1, 1), padding='same')(result)
+        result = BatchNormalization()(result)
+        result = Lambda(K.relu)(result)
+
     while result.shape.as_list()[1] > desired_size:
-        # result = AveragePooling2D((3, 3), strides=(2, 2), padding='same')(result)
-        result = Conv2D(64, (3, 3), padding='same')(result)
+        result = Conv2D(32, (3, 3), padding='same')(result)
         result = BatchNormalization()(result)
         result = Lambda(K.relu)(result)
         result = MaxPooling2D()(result)
@@ -128,30 +125,8 @@ def build(weights_path=''):
     # Use a bunch of downsampled feature maps.
     net = Concatenate()(list(map(downsample, features)))
 
-    # Block 1, Inception + concat.
-    block1_a = net
-    block1_a = Conv2D(128, (1, 1), padding='same')(block1_a)
-    block1_a = BatchNormalization()(block1_a)
-    block1_a = Lambda(K.relu)(block1_a)
-
-    block1_b = block1_a
-    block1_b = Conv2D(64, (1, 1), padding='same')(block1_b)
-    block1_b = BatchNormalization()(block1_b)
-    block1_b = Lambda(K.relu)(block1_b)
-
-    block1_b = Conv2D(64, (3, 3), padding='same')(block1_b)
-    block1_b = BatchNormalization()(block1_b)
-    block1_b = Lambda(K.relu)(block1_b)
-
-    block1_b = Conv2D(128, (1, 1), padding='same')(block1_b)
-    block1_b = BatchNormalization()(block1_b)
-    block1_b = Lambda(K.relu)(block1_b)
-    block1_b = Lambda(lambda x: 0.5 * x)(block1_b)
-
-    block1_c = Concatenate()([block1_a, block1_b])
-
-    # Block 2, Inception + concat + densenet.
-    block2_a = block1_c
+    # Block 2.
+    block2_a = net
     block2_a = Conv2D(64, (1, 1), padding='same')(block2_a)
     block2_a = BatchNormalization()(block2_a)
     block2_a = Lambda(K.relu)(block2_a)
@@ -160,46 +135,55 @@ def build(weights_path=''):
     block2_a = BatchNormalization()(block2_a)
     block2_a = Lambda(K.relu)(block2_a)
 
-    block2_a = Conv2D(128, (3, 3), padding='same')(block2_a)
-    block2_a = Lambda(lambda x: 0.5 * x)(block2_a)
+    block2_a = Conv2D(512, (1, 1), padding='same')(block2_a)
+    block2_a = BatchNormalization()(block2_a)
+    block2_a = Lambda(K.relu)(block2_a)
 
-    block2_b = Concatenate()([block1_c, block2_a])
+    # Block 3.
+    block3_a = block2_a
 
-    # Block 3, 3x3 convs to get to 1x1x256.
-    block3_a = block2_b
-
-    block3_a = Conv2D(128, (1, 1), padding='valid')(block3_a)
+    block3_a = Conv2D(128, (1, 1), padding='same')(block3_a)
     block3_a = BatchNormalization()(block3_a)
     block3_a = Lambda(K.relu)(block3_a)
 
-    block3_a = Conv2D(128, (3, 3), padding='valid')(block3_a)
+    block3_a = Conv2D(128, (3, 3), padding='same')(block3_a)
     block3_a = BatchNormalization()(block3_a)
     block3_a = Lambda(K.relu)(block3_a)
 
-    block3_a = Conv2D(64, (3, 3), padding='valid')(block3_a)
+    block3_a = MaxPooling2D()(block3_a)
+
+    block3_a = Conv2D(256, (1, 1), padding='same')(block3_a)
     block3_a = BatchNormalization()(block3_a)
     block3_a = Lambda(K.relu)(block3_a)
 
-    block3_a = Conv2D(32, (3, 3), padding='valid')(block3_a)
+    block3_a = Conv2D(256, (3, 3), padding='same')(block3_a)
     block3_a = BatchNormalization()(block3_a)
     block3_a = Lambda(K.relu)(block3_a)
 
-    # Block 4, FC conv layer.
+    block3_a = MaxPooling2D()(block3_a)
+
+    # Block 4.
     block4_a = block3_a
+    block4_a = Flatten()(block4_a)
+
     block4_a = Dropout(0.5)(block4_a)
-    block4_a = Conv2D(512, (1, 1), padding='same')(block4_a)
+    block4_a = Dense(512,
+                     kernel_regularizer=l2(5e-3),
+                     bias_regularizer=l2(5e-3))(block4_a)
     block4_a = BatchNormalization()(block4_a)
     block4_a = Lambda(K.relu)(block4_a)
 
-    # Block 5, FC conv layer.
+    # Block 5.
     block5_a = block4_a
     block5_a = Dropout(0.5)(block5_a)
-    block5_a = Conv2D(num_classes, (1, 1), padding='same', activation='sigmoid')(block5_a)
-    block5_a = Flatten()(block5_a)
+    block5_a = Dense(num_classes,
+                     kernel_regularizer=l2(5e-3),
+                     bias_regularizer=l2(5e-3),
+                     activation='sigmoid')(block5_a)
 
     # Pack it up in a model.
     model = Model(inputs=[input_tensor], outputs=[block5_a])
-    model.compile(Adam(lr=2e-6), 'binary_crossentropy', metrics=['accuracy'])
+    model.compile(Adam(lr=1e-5), weighted_loss(), metrics=['binary_accuracy'])
 
     if weights_path:
         model.load_weights(weights_path)
@@ -235,8 +219,8 @@ def batch_generator(labels, batch_size, weighted=False):
 
     if weighted:
         # Sample inversely proportional to data frequency.
-        class_weight = np.log(get_class_weight(labels))
-        # class_weight = np.ones(config.num_classes)
+        # class_weight = get_class_weight(labels)
+        class_weight = np.ones(config.num_classes)
         class_weight = class_weight / np.sum(class_weight) * batch_size
         class_weight = np.int32(class_weight)
 
@@ -260,6 +244,8 @@ def batch_generator(labels, batch_size, weighted=False):
         index = 0
 
         if weighted:
+            np.random.shuffle(class_weight)
+
             # Times each class has been seen.
             class_counts = np.zeros(class_weight.shape[0])
             class_index = 0
@@ -270,7 +256,7 @@ def batch_generator(labels, batch_size, weighted=False):
 
             if weighted:
                 # Keep looking for the right class.
-                while labels[index][1][class_index] == 0.0:
+                while labels[index][1][class_index] < 1.0:
                     index = np.random.randint(len(labels))
 
                 class_counts[class_index] += 1
@@ -314,7 +300,7 @@ if __name__ == '__main__':
 
     model = build()
     datagen, valid_datagen = get_datagen(config.train_path, config.batch_size)
-    class_weight = get_class_weight(helpers.get_labels(config.train_path))
+    class_weight = np.log(get_class_weight(helpers.get_labels(config.train_path)))
 
     train_steps = 500
     validation_steps = 50
