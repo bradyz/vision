@@ -13,6 +13,7 @@ from keras.layers.merge import Concatenate
 from keras.layers.normalization import BatchNormalization
 from keras.layers.pooling import MaxPooling2D
 from keras.applications import vgg16
+from keras.preprocessing.image import random_rotation
 
 import config
 import helpers
@@ -195,7 +196,7 @@ def load_image(image_path, augment=True, fileformat='%s/%s.jpg'):
     filename = fileformat % (config.image_dir, image_path)
 
     # Make things better.
-    image = Image.open(filename)
+    image = Image.open(filename).convert('RGB')
     image = image.resize(config.image_shape[:-1])
 
     if augment:
@@ -204,11 +205,12 @@ def load_image(image_path, augment=True, fileformat='%s/%s.jpg'):
         if i < len(AUGMENT):
             image = image.transpose(AUGMENT[i])
 
-    image = np.float32(image)
-    image = image[:,:,:3]
+    image = np.uint8(image)
 
     if augment:
-        image += 10.0 * np.random.randn(*image.shape)
+        image = random_rotation(image, 180, row_axis=0, col_axis=1, channel_axis=2)
+        image += np.uint8(5.0 * np.random.randn(*image.shape))
+        image = np.clip(image, 0, 255)
 
     return image
 
