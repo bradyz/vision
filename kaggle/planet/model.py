@@ -1,4 +1,4 @@
-from PIL import Image
+import cv2
 import numpy as np
 
 import keras.backend as K
@@ -11,17 +11,12 @@ from keras.layers.core import Lambda, Dropout, Flatten, Dense
 from keras.layers import Input, Conv2D
 from keras.layers.merge import Concatenate
 from keras.layers.normalization import BatchNormalization
-from keras.layers.pooling import MaxPooling2D
-from keras.applications import vgg16
+from keras.layers.pooling import MaxPooling2D, AveragePooling2D
+from keras.applications import resnet50
 from keras.preprocessing.image import random_rotation
 
 import config
 import helpers
-
-
-AUGMENT = [Image.FLIP_LEFT_RIGHT, Image.FLIP_TOP_BOTTOM,
-           Image.ROTATE_90, Image.ROTATE_180, Image.ROTATE_270,
-           Image.TRANSPOSE]
 
 
 def f_measure(p, r, beta_sq=2.0):
@@ -71,7 +66,7 @@ class MetricCallback(Callback):
         print_metrics(TP, FP, FN)
 
 
-def weighted_loss(weighted=True, alpha=1.0):
+def weighted_loss(weighted=False, alpha=1.0):
     def loss(y_true, y_pred):
         left = y_true * K.log(y_pred + K.epsilon())
         right = (1.0 - y_true) * K.log(1.0 - y_pred + K.epsilon())
@@ -94,14 +89,15 @@ def downsample(tensor, desired_size=7):
     result = tensor
 
     if result.shape.as_list()[1] > desired_size:
-        result = Conv2D(32, (1, 1), padding='same')(result)
+        result = Conv2D(128, (1, 1), padding='same')(result)
+        result = BatchNormalization()(result)
+        result = Lambda(K.relu)(result)
+
+        result = Conv2D(128, (3, 3), padding='same')(result)
         result = BatchNormalization()(result)
         result = Lambda(K.relu)(result)
 
     while result.shape.as_list()[1] > desired_size:
-        result = Conv2D(32, (3, 3), padding='same')(result)
-        result = BatchNormalization()(result)
-        result = Lambda(K.relu)(result)
         result = MaxPooling2D()(result)
 
     return result
@@ -111,80 +107,73 @@ def build(weights_path=''):
     num_classes = config.num_classes
     input_tensor = Input(shape=(224, 224, 3))
 
-    vgg = vgg16.VGG16(input_tensor=input_tensor,
-                      include_top=False,
-                      classes=num_classes)
+    resnet = resnet50.ResNet50(input_tensor=input_tensor, include_top=False)
 
     # Freeze for training.
-    for layer in vgg.layers:
+    for layer in resnet.layers:
         layer.frozen = True
 
     # Gather feature layers.
-    features = [layer.output for layer in vgg.layers if layer.name in config.FEATURES]
-    features += [input_tensor]
+    features = [layer.output for layer in resnet.layers if layer.name in config.FEATURES]
 
     # Use a bunch of downsampled feature maps.
     net = Concatenate()(list(map(downsample, features)))
 
-    # Block 2.
-    block2_a = net
-    block2_a = Conv2D(64, (1, 1), padding='same')(block2_a)
-    block2_a = BatchNormalization()(block2_a)
-    block2_a = Lambda(K.relu)(block2_a)
+    print(net)
 
-    block2_a = Conv2D(64, (3, 3), padding='same')(block2_a)
-    block2_a = BatchNormalization()(block2_a)
-    block2_a = Lambda(K.relu)(block2_a)
+    block1 = net
 
-    block2_a = Conv2D(512, (1, 1), padding='same')(block2_a)
-    block2_a = BatchNormalization()(block2_a)
-    block2_a = Lambda(K.relu)(block2_a)
+    block1 = Conv2D(128, (1, 1), padding='same')(block1)
+    block1 = BatchNormalization()(block1)
+    block1 = Lambda(K.relu)(block1)
+    block1 = Conv2D(128, (3, 3), padding='same')(block1)
+    block1 = BatchNormalization()(block1)
+    block1 = Lambda(K.relu)(block1)
 
-    # Block 3.
-    block3_a = block2_a
+    block2 = block1
+    block2 = Conv2D(256, (1, 1), padding='same')(block2)
+    block2 = BatchNormalization()(block2)
+    block2 = Lambda(K.relu)(block2)
+    block2 = Conv2D(256, (3, 3), padding='same')(block2)
+    block2 = BatchNormalization()(block2)
+    block2 = Lambda(K.relu)(block2)
 
-    block3_a = Conv2D(128, (1, 1), padding='same')(block3_a)
-    block3_a = BatchNormalization()(block3_a)
-    block3_a = Lambda(K.relu)(block3_a)
+    block2 = MaxPooling2D()(block2)
 
-    block3_a = Conv2D(128, (3, 3), padding='same')(block3_a)
-    block3_a = BatchNormalization()(block3_a)
-    block3_a = Lambda(K.relu)(block3_a)
+    block3 = block2
+    block3 = Conv2D(512, (1, 1), padding='same')(block3)
+    block3 = BatchNormalization()(block3)
+    block3 = Lambda(K.relu)(block3)
+    block3 = Conv2D(512, (3, 3), padding='same')(block3)
+    block3 = BatchNormalization()(block3)
+    block3 = Lambda(K.relu)(block3)
 
-    block3_a = MaxPooling2D()(block3_a)
+    block3 = AveragePooling2D()(block3)
 
-    block3_a = Conv2D(256, (1, 1), padding='same')(block3_a)
-    block3_a = BatchNormalization()(block3_a)
-    block3_a = Lambda(K.relu)(block3_a)
+    block4 = block3
+    block4 = Dropout(0.5)(block4)
+    block4 = Conv2D(1024, (1, 1), padding='same',
+                    kernel_regularizer=l2(5e-3))(block4)
+    block4 = BatchNormalization()(block4)
+    block4 = Lambda(K.relu)(block4)
 
-    block3_a = Conv2D(256, (3, 3), padding='same')(block3_a)
-    block3_a = BatchNormalization()(block3_a)
-    block3_a = Lambda(K.relu)(block3_a)
-
-    block3_a = MaxPooling2D()(block3_a)
+    block5 = block4
+    block5 = Dropout(0.5)(block5)
+    block5 = Conv2D(1024, (1, 1), padding='same',
+                    kernel_regularizer=l2(5e-3))(block5)
+    block5 = BatchNormalization()(block5)
+    block5 = Lambda(K.relu)(block5)
 
     # Block 4.
-    block4_a = block3_a
-    block4_a = Flatten()(block4_a)
-
-    block4_a = Dropout(0.5)(block4_a)
-    block4_a = Dense(512,
-                     kernel_regularizer=l2(5e-3),
-                     bias_regularizer=l2(5e-3))(block4_a)
-    block4_a = BatchNormalization()(block4_a)
-    block4_a = Lambda(K.relu)(block4_a)
-
-    # Block 5.
-    block5_a = block4_a
-    block5_a = Dropout(0.5)(block5_a)
-    block5_a = Dense(num_classes,
-                     kernel_regularizer=l2(5e-3),
-                     bias_regularizer=l2(5e-3),
-                     activation='sigmoid')(block5_a)
+    block6 = block5
+    block6 = Dropout(0.5)(block6)
+    block6 = Conv2D(num_classes, (1, 1), padding='same', activation='sigmoid',
+                    kernel_regularizer=l2(5e-3))(block6)
+    block6 = Flatten()(block6)
 
     # Pack it up in a model.
-    model = Model(inputs=[input_tensor], outputs=[block5_a])
-    model.compile(Adam(lr=1e-5), weighted_loss(), metrics=['binary_accuracy'])
+    model = Model(inputs=[input_tensor], outputs=[block6])
+    model.compile(Adam(lr=2e-5), weighted_loss(), metrics=['binary_accuracy'])
 
     if weights_path:
         model.load_weights(weights_path)
@@ -196,20 +185,13 @@ def load_image(image_path, augment=True, fileformat='%s/%s.jpg'):
     filename = fileformat % (config.image_dir, image_path)
 
     # Make things better.
-    image = Image.open(filename).convert('RGB')
-    image = image.resize(config.image_shape[:-1])
-
-    if augment:
-        i = np.random.randint(len(AUGMENT) + 1)
-
-        if i < len(AUGMENT):
-            image = image.transpose(AUGMENT[i])
-
-    image = np.uint8(image)
+    image = cv2.imread(filename)
+    image = cv2.resize(image, (config.image_shape[0], config.image_shape[1]))
+    image = image.astype(np.float32)
 
     if augment:
         image = random_rotation(image, 180, row_axis=0, col_axis=1, channel_axis=2)
-        image += np.uint8(5.0 * np.random.randn(*image.shape))
+        image += np.random.randn(*image.shape)
         image = np.clip(image, 0, 255)
 
     return image
@@ -221,8 +203,10 @@ def batch_generator(labels, batch_size, weighted=False):
 
     if weighted:
         # Sample inversely proportional to data frequency.
-        # class_weight = get_class_weight(labels)
-        class_weight = np.ones(config.num_classes)
+        # class_weight = np.ones(config.num_classes)
+        # class_weight = np.log(get_class_weight(labels))
+        class_weight = get_class_weight(labels)
+
         class_weight = class_weight / np.sum(class_weight) * batch_size
         class_weight = np.int32(class_weight)
 
@@ -271,7 +255,7 @@ def batch_generator(labels, batch_size, weighted=False):
             y[i] = labels[index][1]
 
         # Batchwise preprocess images.
-        x = vgg16.preprocess_input(x)
+        x = resnet50.preprocess_input(x)
 
         yield x, y
 
