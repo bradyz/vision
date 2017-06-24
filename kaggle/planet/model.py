@@ -66,7 +66,7 @@ class MetricCallback(Callback):
         print_metrics(TP, FP, FN)
 
 
-def weighted_loss(weighted=False, alpha=1.0):
+def weighted_loss(weighted=True, alpha=4.0):
     def loss(y_true, y_pred):
         left = y_true * K.log(y_pred + K.epsilon())
         right = (1.0 - y_true) * K.log(1.0 - y_pred + K.epsilon())
@@ -109,7 +109,6 @@ def build(weights_path=''):
 
     resnet = resnet50.ResNet50(input_tensor=input_tensor, include_top=False)
 
-    # Freeze for training.
     for layer in resnet.layers:
         layer.frozen = True
 
@@ -123,10 +122,10 @@ def build(weights_path=''):
 
     block1 = net
 
-    block1 = Conv2D(128, (1, 1), padding='same')(block1)
+    block1 = Conv2D(256, (1, 1), padding='same')(block1)
     block1 = BatchNormalization()(block1)
     block1 = Lambda(K.relu)(block1)
-    block1 = Conv2D(128, (3, 3), padding='same')(block1)
+    block1 = Conv2D(256, (3, 3), padding='same')(block1)
     block1 = BatchNormalization()(block1)
     block1 = Lambda(K.relu)(block1)
 
@@ -153,14 +152,14 @@ def build(weights_path=''):
     block4 = block3
     block4 = Dropout(0.5)(block4)
     block4 = Conv2D(1024, (1, 1), padding='same',
-                    kernel_regularizer=l2(5e-3))(block4)
+                    kernel_regularizer=l2(5e-5))(block4)
     block4 = BatchNormalization()(block4)
     block4 = Lambda(K.relu)(block4)
 
     block5 = block4
     block5 = Dropout(0.5)(block5)
     block5 = Conv2D(1024, (1, 1), padding='same',
-                    kernel_regularizer=l2(5e-3))(block5)
+                    kernel_regularizer=l2(5e-5))(block5)
     block5 = BatchNormalization()(block5)
     block5 = Lambda(K.relu)(block5)
 
@@ -168,12 +167,12 @@ def build(weights_path=''):
     block6 = block5
     block6 = Dropout(0.5)(block6)
     block6 = Conv2D(num_classes, (1, 1), padding='same', activation='sigmoid',
-                    kernel_regularizer=l2(5e-3))(block6)
+                    kernel_regularizer=l2(5e-5))(block6)
     block6 = Flatten()(block6)
 
     # Pack it up in a model.
     model = Model(inputs=[input_tensor], outputs=[block6])
-    model.compile(Adam(lr=2e-5), weighted_loss(), metrics=['binary_accuracy'])
+    model.compile(Adam(lr=1e-5), weighted_loss(), metrics=['binary_accuracy'])
 
     if weights_path:
         model.load_weights(weights_path)
@@ -230,7 +229,7 @@ def batch_generator(labels, batch_size, weighted=False):
         index = 0
 
         if weighted:
-            np.random.shuffle(class_weight)
+            # np.random.shuffle(class_weight)
 
             # Times each class has been seen.
             class_counts = np.zeros(class_weight.shape[0])
@@ -280,12 +279,46 @@ def get_class_weight(labels):
     return 1.0 / (counts / np.sum(counts))
 
 
-if __name__ == '__main__':
-    np.random.seed(0)
-    np.set_printoptions(precision=2)
+def find_best_threshold(model, datagen, step=0.01, num_samples=50):
+    threshold = step
 
-    model = build()
-    datagen, valid_datagen = get_datagen(config.train_path, config.batch_size)
+    best_threshold = threshold
+    best_f_score = float('inf')
+
+    while threshold < 1.0:
+        y_true = np.zeros(num_samples, config.num_classes)
+        y_pred = np.zeros(num_samples, config.num_classes)
+
+        index = 0
+
+        for _ in range(num_samples):
+            
+
+def get_predictions(model, datagen, num_samples=50):
+    y_true = np.zeros(num_samples * config.batch_size, config.num_classes)
+    y_pred = np.zeros(num_samples * config.batch_size, config.num_classes)
+
+    for i in range(num_samples):
+        x, y = next(datagen)
+
+        # Get the slice to fill up.
+        i_start = i * config.batch_size
+        i_end = i * (config.batch_size + 1)
+
+        y_true[i_start:i_end] = y
+        y_pred[i_start:i_end] = self.model.predict_on_batch(x)
+
+    return y_true, y_pred
+
+
+def test(model, datagen, valid_datagen):
+    y_true, y_pred = get_predictions(model, datagen)
+
+    threshold = find_best_threshold(model, datagen)
+
+
+
+def train(model, datagen, valid_datagen):
     class_weight = np.log(get_class_weight(helpers.get_labels(config.train_path)))
 
     train_steps = 500
@@ -294,7 +327,7 @@ if __name__ == '__main__':
 
     callbacks = list()
     callbacks.append(ModelCheckpoint(config.model_path, verbose=1))
-    callbacks.append(ReduceLROnPlateau(factor=0.5, patience=1, verbose=1, epsilon=0.01))
+    callbacks.append(ReduceLROnPlateau(factor=0.5, patience=3, verbose=1, epsilon=0.01))
     callbacks.append(MetricCallback(model, valid_datagen, validation_steps))
     callbacks.append(TensorBoard(write_graph=False))
 
@@ -304,3 +337,18 @@ if __name__ == '__main__':
                         validation_steps=validation_steps,
                         callbacks=callbacks,
                         class_weight=class_weight)
+
+
+def main():
+    np.random.seed(0)
+    np.set_printoptions(precision=2)
+
+    model = build(config.model_path)
+    datagen, valid_datagen = get_datagen(config.train_path, config.batch_size)
+
+    # Find the optimal thresholds.
+    test(model, datagen, valid_datagen)
+
+
+if __name__ == '__main__':
+    main()
