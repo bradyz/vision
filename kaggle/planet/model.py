@@ -1,13 +1,15 @@
 import cv2
 import numpy as np
 
+from sklearn.metrics import precision_recall_fscore_support
+
 import keras.backend as K
 
 from keras.regularizers import l2
-from keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, Callback, TensorBoard
+from keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, TensorBoard
 from keras.models import Model
 from keras.optimizers import Adam
-from keras.layers.core import Lambda, Dropout, Flatten, Dense
+from keras.layers.core import Lambda, Dropout, Flatten
 from keras.layers import Input, Conv2D
 from keras.layers.merge import Concatenate
 from keras.layers.normalization import BatchNormalization
@@ -17,53 +19,7 @@ from keras.preprocessing.image import random_rotation
 
 import config
 import helpers
-
-
-def f_measure(p, r, beta_sq=2.0):
-    return (1.0 + beta_sq) * (p * r) / (beta_sq * p + r)
-
-
-def print_metrics(TP, FP, FN):
-    precision = TP / (TP + FP)
-    recall = TP / (TP + FN)
-    f_score = f_measure(precision, recall)
-
-    f_score[np.logical_and(~np.isfinite(precision), np.isfinite(recall))] = 0.0
-    f_score[~np.isfinite(f_score)] = 0.0
-    f_score[~np.isfinite(recall)] = np.nan
-
-    average_f_score = np.mean(f_score[np.isfinite(f_score)])
-
-    print()
-    print('Precision:\n%s' % precision)
-    print('Recall:\n%s' % recall)
-    print('F_score:\n%s' % f_score)
-    print('F_score:\t%s' % average_f_score)
-
-
-class MetricCallback(Callback):
-    def __init__(self, model, valid_datagen, steps):
-        self.model = model
-        self.valid_datagen = valid_datagen
-        self.steps = steps
-
-    def on_epoch_end(self, epoch, logs={}):
-        TP = np.zeros(config.num_classes, dtype=np.int32)
-        FP = np.zeros(config.num_classes, dtype=np.int32)
-        FN = np.zeros(config.num_classes, dtype=np.int32)
-
-        for i, x_y in enumerate(self.valid_datagen):
-            if i == self.steps:
-                break
-
-            y_true = np.round(x_y[1]).astype('bool')
-            y_pred = np.round(self.model.predict_on_batch(x_y[0])).astype('bool')
-
-            TP += np.sum(np.logical_and(y_pred == True, y_true == True), axis=0)
-            FP += np.sum(np.logical_and(y_pred == True, y_true == False), axis=0)
-            FN += np.sum(np.logical_and(y_pred == False, y_true == True), axis=0)
-
-        print_metrics(TP, FP, FN)
+import metrics
 
 
 def weighted_loss(weighted=True, alpha=4.0):
@@ -279,20 +235,25 @@ def get_class_weight(labels):
     return 1.0 / (counts / np.sum(counts))
 
 
-def find_best_threshold(model, datagen, step=0.01, num_samples=50):
-    threshold = step
+def find_best_threshold(y_true, y_pred, step=0.01):
+    best_threshold = np.full(config.num_classes, -1.0)
+    best_f_score = np.full(config.num_classes, -1.0)
 
-    best_threshold = threshold
-    best_f_score = float('inf')
+    # Brute force for each class threshold.
+    for threshold in range(step, 1.0, step):
+        y_true_threshold = y_true >= threshold
+        y_pred_threshold = y_pred >= threshold
 
-    while threshold < 1.0:
-        y_true = np.zeros(num_samples, config.num_classes)
-        y_pred = np.zeros(num_samples, config.num_classes)
+        f_score = precision_recall_fscore_support(y_true_threshold,
+                                                  y_pred_threshold, 2.0)
 
-        index = 0
+        for i in range(config.num_classes):
+            if f_score[i] > best_f_score[i]:
+                best_f_score[i] = f_score[i]
+                best_threshold[i] = threshold
 
-        for _ in range(num_samples):
-            
+    return best_threshold
+
 
 def get_predictions(model, datagen, num_samples=50):
     y_true = np.zeros(num_samples * config.batch_size, config.num_classes)
@@ -306,16 +267,33 @@ def get_predictions(model, datagen, num_samples=50):
         i_end = i * (config.batch_size + 1)
 
         y_true[i_start:i_end] = y
-        y_pred[i_start:i_end] = self.model.predict_on_batch(x)
+        y_pred[i_start:i_end] = model.predict_on_batch(x)
 
     return y_true, y_pred
 
 
 def test(model, datagen, valid_datagen):
+    # Cache the predictions.
     y_true, y_pred = get_predictions(model, datagen)
+    y_true_valid, y_pred_valid = get_predictions(model, valid_datagen)
 
-    threshold = find_best_threshold(model, datagen)
+    threshold, f_score = find_best_threshold(y_true, y_pred)
 
+    # Use this threshold for the validation set.
+    threshold_valid, f_score_valid_best = find_best_threshold(y_true_valid,
+                                                              y_pred_valid)
+
+    y_true_valid = y_true_valid > threshold
+    y_pred_valid = y_pred_valid > threshold
+
+    f_score_valid = precision_recall_fscore_support(y_true_valid,
+                                                    y_pred_valid, 2.0)
+
+    print(threshold)
+    print(f_score)
+    print(np.mean(f_score))
+    print(f_score_valid_best)
+    print(f_score_valid)
 
 
 def train(model, datagen, valid_datagen):
@@ -327,8 +305,10 @@ def train(model, datagen, valid_datagen):
 
     callbacks = list()
     callbacks.append(ModelCheckpoint(config.model_path, verbose=1))
-    callbacks.append(ReduceLROnPlateau(factor=0.5, patience=3, verbose=1, epsilon=0.01))
-    callbacks.append(MetricCallback(model, valid_datagen, validation_steps))
+    callbacks.append(ReduceLROnPlateau(factor=0.5, patience=3,
+                                       verbose=1, epsilon=0.01))
+    callbacks.append(metrics.MetricCallback(model, valid_datagen,
+                                            validation_steps))
     callbacks.append(TensorBoard(write_graph=False))
 
     model.fit_generator(datagen,
