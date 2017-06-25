@@ -239,37 +239,51 @@ def find_best_threshold(y_true, y_pred, step=0.01):
     best_threshold = np.full(config.num_classes, -1.0)
     best_f_score = np.full(config.num_classes, -1.0)
 
+    # Need to use while because for is integer only.
+    threshold = step
+
     # Brute force for each class threshold.
-    for threshold in range(step, 1.0, step):
+    while threshold < 1.0:
         y_true_threshold = y_true >= threshold
         y_pred_threshold = y_pred >= threshold
 
-        f_score = precision_recall_fscore_support(y_true_threshold,
-                                                  y_pred_threshold, 2.0)
+        _, _, f_score, _ = precision_recall_fscore_support(y_true_threshold,
+                                                           y_pred_threshold, 2.0)
 
         for i in range(config.num_classes):
             if f_score[i] > best_f_score[i]:
                 best_f_score[i] = f_score[i]
                 best_threshold[i] = threshold
 
-    return best_threshold
+        threshold += step
+
+    return best_threshold, best_f_score
 
 
 def get_predictions(model, datagen, num_samples=50):
-    y_true = np.zeros(num_samples * config.batch_size, config.num_classes)
-    y_pred = np.zeros(num_samples * config.batch_size, config.num_classes)
+    y_true = np.zeros((num_samples * config.batch_size, config.num_classes))
+    y_pred = np.zeros((num_samples * config.batch_size, config.num_classes))
 
     for i in range(num_samples):
         x, y = next(datagen)
 
         # Get the slice to fill up.
         i_start = i * config.batch_size
-        i_end = i * (config.batch_size + 1)
+        i_end = (i + 1) * config.batch_size
 
-        y_true[i_start:i_end] = y
-        y_pred[i_start:i_end] = model.predict_on_batch(x)
+        y_true[i_start:i_end,:] = y
+        y_pred[i_start:i_end,:] = model.predict_on_batch(x)
 
     return y_true, y_pred
+
+
+def get_f_score_at_threshold(y_true, y_pred, threshold):
+    y_true = y_true > threshold
+    y_pred = y_pred > threshold
+
+    _, _, f_score, _ = precision_recall_fscore_support(y_true, y_pred, 2.0)
+
+    return f_score
 
 
 def test(model, datagen, valid_datagen):
@@ -280,14 +294,29 @@ def test(model, datagen, valid_datagen):
     threshold, f_score = find_best_threshold(y_true, y_pred)
 
     # Use this threshold for the validation set.
-    threshold_valid, f_score_valid_best = find_best_threshold(y_true_valid,
-                                                              y_pred_valid)
+    f_score_valid = get_f_score_at_threshold(y_true_valid, y_pred_valid, threshold)
 
-    y_true_valid = y_true_valid > threshold
-    y_pred_valid = y_pred_valid > threshold
+    # Just in case what would the best for validation be.
+    threshold_valid_best, f_score_valid_best = find_best_threshold(y_true_valid,
+                                                                   y_pred_valid)
 
-    f_score_valid = precision_recall_fscore_support(y_true_valid,
-                                                    y_pred_valid, 2.0)
+    # Test the validation threshold on the train set (just because).
+    f_score_tmp = get_f_score_at_threshold(y_true, y_pred, threshold_valid_best)
+
+    # See what the optimal threshold would be.
+    print('Optimal Train')
+    print('Threshold: %s' % threshold)
+    print('F_score: %s\n F_score_mean: %s' % (f_score, np.mean(f_score)))
+
+    print('Optimal Train on Valid')
+    print('F_score: %s\n F_score_mean: %s' % (f_score_valid, np.mean(f_score_valid)))
+
+    print('Optimal Valid on Valid')
+    print('Threshold: %s' % threshold_valid_best)
+    print('F_score: %s\n F_score_mean: %s' % (f_score_valid_best, np.mean(f_score_valid_best)))
+
+    print('Optimal Valid on Train')
+    print('F_score: %s\n F_score_mean: %s' % (f_score_tmp, np.mean(f_score_tmp)))
 
     print(threshold)
     print(f_score)
