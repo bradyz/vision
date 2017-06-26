@@ -2,6 +2,8 @@ import numpy as np
 
 from keras.callbacks import Callback
 
+import config
+
 
 def f_measure(p, r, beta_sq=2.0):
     return (1.0 + beta_sq) * (p * r) / (beta_sq * p + r)

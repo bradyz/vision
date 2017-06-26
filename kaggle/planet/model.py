@@ -3,6 +3,8 @@ import numpy as np
 
 from sklearn.metrics import precision_recall_fscore_support
 
+import tensorflow as tf
+
 import keras.backend as K
 
 from keras.regularizers import l2
@@ -13,7 +15,7 @@ from keras.layers.core import Lambda, Dropout, Flatten
 from keras.layers import Input, Conv2D
 from keras.layers.merge import Concatenate
 from keras.layers.normalization import BatchNormalization
-from keras.layers.pooling import MaxPooling2D, AveragePooling2D
+from keras.layers.pooling import MaxPooling2D, AveragePooling2D, GlobalAveragePooling2D
 from keras.applications import resnet50
 from keras.preprocessing.image import random_rotation
 
@@ -22,7 +24,7 @@ import helpers
 import metrics
 
 
-def weighted_loss(weighted=True, alpha=4.0):
+def weighted_loss(weighted=False, alpha=1.0):
     def loss(y_true, y_pred):
         left = y_true * K.log(y_pred + K.epsilon())
         right = (1.0 - y_true) * K.log(1.0 - y_pred + K.epsilon())
@@ -54,9 +56,41 @@ def downsample(tensor, desired_size=7):
         result = Lambda(K.relu)(result)
 
     while result.shape.as_list()[1] > desired_size:
-        result = MaxPooling2D()(result)
+        result = AveragePooling2D()(result)
 
     return result
+
+
+def resize(tensor, h, w):
+    return Lambda(lambda x: tf.image.resize_images(x, (h, w)))(tensor)
+
+
+def bottleneck_layer(net, k):
+    net = Conv2D(k // 2, (1, 1), padding='same')(net)
+    net = BatchNormalization()(net)
+    net = Lambda(K.relu)(net)
+
+    net = Conv2D(k, (3, 3), padding='same')(net)
+    net = BatchNormalization()(net)
+    net = Lambda(K.relu)(net)
+
+    return net
+
+
+def dense_block(net, k, n=3):
+    for _ in range(n):
+        net = Concatenate()([net, bottleneck_layer(net, k)])
+
+    return net
+
+
+def transition_block(net, k):
+    net = Conv2D(k, (1, 1), padding='same')(net)
+    net = BatchNormalization()(net)
+    net = Lambda(K.relu)(net)
+    net = AveragePooling2D()(net)
+
+    return net
 
 
 def build(weights_path=''):
@@ -72,63 +106,56 @@ def build(weights_path=''):
     features = [layer.output for layer in resnet.layers if layer.name in config.FEATURES]
 
     # Use a bunch of downsampled feature maps.
-    net = Concatenate()(list(map(downsample, features)))
+    # net = Concatenate()(list(map(downsample, features)))
 
-    print(net)
+    # Use the relu's from each resolution.
+    relu_112, relu_55, relu_28, relu_14, relu_7 = features
+    relu_56 = resize(relu_55, 56, 56)
 
-    block1 = net
+    # 112 x 112.
+    block1 = relu_112
+    block1 = dense_block(block1, 12)
 
-    block1 = Conv2D(256, (1, 1), padding='same')(block1)
-    block1 = BatchNormalization()(block1)
-    block1 = Lambda(K.relu)(block1)
-    block1 = Conv2D(256, (3, 3), padding='same')(block1)
-    block1 = BatchNormalization()(block1)
-    block1 = Lambda(K.relu)(block1)
+    # 56 x 56.
+    block2 = transition_block(block1, 512)
+    block2 = Concatenate()([block2, relu_56])
+    block2 = dense_block(block2, 12)
 
-    block2 = block1
-    block2 = Conv2D(256, (1, 1), padding='same')(block2)
-    block2 = BatchNormalization()(block2)
-    block2 = Lambda(K.relu)(block2)
-    block2 = Conv2D(256, (3, 3), padding='same')(block2)
-    block2 = BatchNormalization()(block2)
-    block2 = Lambda(K.relu)(block2)
+    # 28 x 28.
+    block3 = transition_block(block2, 512)
+    block3 = Concatenate()([block3, relu_28])
+    block3 = dense_block(block3, 12)
 
-    block2 = MaxPooling2D()(block2)
+    # 14 x 14.
+    block4 = transition_block(block3, 512)
+    block4 = Concatenate()([block4, relu_14])
+    block4 = dense_block(block4, 12)
 
-    block3 = block2
-    block3 = Conv2D(512, (1, 1), padding='same')(block3)
-    block3 = BatchNormalization()(block3)
-    block3 = Lambda(K.relu)(block3)
-    block3 = Conv2D(512, (3, 3), padding='same')(block3)
-    block3 = BatchNormalization()(block3)
-    block3 = Lambda(K.relu)(block3)
+    # 7 x 7.
+    block5 = transition_block(block4, 512)
+    block5 = Concatenate()([block5, relu_7])
+    block5 = dense_block(block5, 12)
 
-    block3 = AveragePooling2D()(block3)
-
-    block4 = block3
-    block4 = Dropout(0.5)(block4)
-    block4 = Conv2D(1024, (1, 1), padding='same',
-                    kernel_regularizer=l2(5e-5))(block4)
-    block4 = BatchNormalization()(block4)
-    block4 = Lambda(K.relu)(block4)
-
-    block5 = block4
-    block5 = Dropout(0.5)(block5)
-    block5 = Conv2D(1024, (1, 1), padding='same',
-                    kernel_regularizer=l2(5e-5))(block5)
-    block5 = BatchNormalization()(block5)
-    block5 = Lambda(K.relu)(block5)
-
-    # Block 4.
-    block6 = block5
+    block6 = Conv2D(1024, (1, 1), padding='same')(block5)
+    block6 = BatchNormalization()(block6)
     block6 = Dropout(0.5)(block6)
-    block6 = Conv2D(num_classes, (1, 1), padding='same', activation='sigmoid',
-                    kernel_regularizer=l2(5e-5))(block6)
-    block6 = Flatten()(block6)
+    block6 = Lambda(K.relu)(block6)
+
+    block7 = Conv2D(config.num_classes, (1, 1), padding='same',
+                    activation='sigmoid', kernel_regularizer=l2(5e-5))(block6)
+    block7 = GlobalAveragePooling2D()(block7)
+
+    print(block1)
+    print(block2)
+    print(block3)
+    print(block4)
+    print(block5)
+    print(block6)
+    print(block7)
 
     # Pack it up in a model.
-    model = Model(inputs=[input_tensor], outputs=[block6])
-    model.compile(Adam(lr=1e-5), weighted_loss(), metrics=['binary_accuracy'])
+    model = Model(inputs=[input_tensor], outputs=[block7])
+    model.compile(Adam(lr=1e-6), weighted_loss(), metrics=['binary_accuracy'])
 
     if weights_path:
         model.load_weights(weights_path)
@@ -146,21 +173,21 @@ def load_image(image_path, augment=True, fileformat='%s/%s.jpg'):
 
     if augment:
         image = random_rotation(image, 180, row_axis=0, col_axis=1, channel_axis=2)
-        image += np.random.randn(*image.shape)
+        image += 10.0 * np.random.randn(*image.shape)
         image = np.clip(image, 0, 255)
 
     return image
 
 
-def batch_generator(labels, batch_size, weighted=False):
+def batch_generator(labels, batch_size, weighted=True):
     x = np.zeros([batch_size] + config.image_shape)
     y = np.zeros([batch_size] + [config.num_classes])
 
     if weighted:
         # Sample inversely proportional to data frequency.
         # class_weight = np.ones(config.num_classes)
-        # class_weight = np.log(get_class_weight(labels))
-        class_weight = get_class_weight(labels)
+        class_weight = np.log(get_class_weight(labels))
+        # class_weight = get_class_weight(labels)
 
         class_weight = class_weight / np.sum(class_weight) * batch_size
         class_weight = np.int32(class_weight)
@@ -260,7 +287,7 @@ def find_best_threshold(y_true, y_pred, step=0.01):
     return best_threshold, best_f_score
 
 
-def get_predictions(model, datagen, num_samples=50):
+def get_predictions(model, datagen, num_samples=100):
     y_true = np.zeros((num_samples * config.batch_size, config.num_classes))
     y_pred = np.zeros((num_samples * config.batch_size, config.num_classes))
 
@@ -318,16 +345,8 @@ def test(model, datagen, valid_datagen):
     print('Optimal Valid on Train')
     print('F_score: %s\n F_score_mean: %s' % (f_score_tmp, np.mean(f_score_tmp)))
 
-    print(threshold)
-    print(f_score)
-    print(np.mean(f_score))
-    print(f_score_valid_best)
-    print(f_score_valid)
-
 
 def train(model, datagen, valid_datagen):
-    class_weight = np.log(get_class_weight(helpers.get_labels(config.train_path)))
-
     train_steps = 500
     validation_steps = 50
     num_epochs = 100
@@ -344,16 +363,18 @@ def train(model, datagen, valid_datagen):
                         steps_per_epoch=train_steps, epochs=num_epochs,
                         validation_data=valid_datagen,
                         validation_steps=validation_steps,
-                        callbacks=callbacks,
-                        class_weight=class_weight)
+                        callbacks=callbacks)
 
 
 def main():
     np.random.seed(0)
     np.set_printoptions(precision=2)
 
-    model = build(config.model_path)
+    model = build()
     datagen, valid_datagen = get_datagen(config.train_path, config.batch_size)
+
+    # Train the model.
+    train(model, datagen, valid_datagen)
 
     # Find the optimal thresholds.
     test(model, datagen, valid_datagen)
