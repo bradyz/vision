@@ -45,3 +45,11 @@ Given an image x, output a bounding box that encloses a face.
 This is done through some naive kernels and using a linear SVM (through gradient descent) that was trained on a batch of 20 positive/negative samples.
 
 <img src="face_detector/face_detector.png" width="50%">
+
+### Marching Cubes
+
+Given an indicator function f(x, y) on a uniform grid, a level set can be extracted.
+
+There are a total of 16 cases (2^4 in 2d, 2^8 in 3d).
+
+<img src="marching_squares/march.png" width="50%">
