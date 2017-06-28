@@ -24,15 +24,16 @@ import helpers
 import metrics
 
 
-def weighted_loss(weighted=False, alpha=1.0):
+def weighted_loss(weighted=True, alpha=2.0):
     def loss(y_true, y_pred):
         left = y_true * K.log(y_pred + K.epsilon())
         right = (1.0 - y_true) * K.log(1.0 - y_pred + K.epsilon())
 
-        log_loss = K.mean(left, axis=0) + weights * K.mean(right, axis=0)
+        log_loss = weights * K.mean(left, axis=0) + K.mean(right, axis=0)
 
-        return K.mean(-1.0 * log_loss)
+        return -1.0 * K.mean(log_loss)
 
+    # Weights will penalize missing a positive more.
     if weighted:
         weights = np.log(get_class_weight(helpers.get_labels(config.train_path)))
     else:
@@ -65,27 +66,26 @@ def resize(tensor, h, w):
     return Lambda(lambda x: tf.image.resize_images(x, (h, w)))(tensor)
 
 
-def bottleneck_layer(net, k):
-    net = Conv2D(k // 2, (1, 1), padding='same')(net)
+def bottleneck_layer(net, k, decay=5e-2):
+    net = Conv2D(k // 2, (1, 1), padding='same', kernel_regularizer=l2(decay))(net)
     net = BatchNormalization()(net)
     net = Lambda(K.relu)(net)
 
-    net = Conv2D(k, (3, 3), padding='same')(net)
+    net = Conv2D(k, (3, 3), padding='same', kernel_regularizer=l2(decay))(net)
     net = BatchNormalization()(net)
     net = Lambda(K.relu)(net)
 
     return net
 
 
-def dense_block(net, k, n=3):
+def dense_block(net, k, n=2):
     for _ in range(n):
         net = Concatenate()([net, bottleneck_layer(net, k)])
 
     return net
 
 
-def transition_block(net, k):
-    net = Conv2D(k, (1, 1), padding='same')(net)
+def transition_block(net):
     net = BatchNormalization()(net)
     net = Lambda(K.relu)(net)
     net = AveragePooling2D()(net)
@@ -100,7 +100,7 @@ def build(weights_path=''):
     resnet = resnet50.ResNet50(input_tensor=input_tensor, include_top=False)
 
     for layer in resnet.layers:
-        layer.frozen = True
+        layer.frozen = False
 
     # Gather feature layers.
     features = [layer.output for layer in resnet.layers if layer.name in config.FEATURES]
@@ -114,48 +114,40 @@ def build(weights_path=''):
 
     # 112 x 112.
     block1 = relu_112
-    block1 = dense_block(block1, 12)
+    block1 = dense_block(block1, 4)
 
     # 56 x 56.
-    block2 = transition_block(block1, 512)
+    block2 = transition_block(block1)
     block2 = Concatenate()([block2, relu_56])
-    block2 = dense_block(block2, 12)
+    block2 = dense_block(block2, 4)
 
     # 28 x 28.
-    block3 = transition_block(block2, 512)
+    block3 = transition_block(block2)
     block3 = Concatenate()([block3, relu_28])
-    block3 = dense_block(block3, 12)
+    block3 = dense_block(block3, 4)
 
     # 14 x 14.
-    block4 = transition_block(block3, 512)
+    block4 = transition_block(block3)
     block4 = Concatenate()([block4, relu_14])
-    block4 = dense_block(block4, 12)
+    block4 = dense_block(block4, 4)
 
     # 7 x 7.
-    block5 = transition_block(block4, 512)
+    block5 = transition_block(block4)
     block5 = Concatenate()([block5, relu_7])
-    block5 = dense_block(block5, 12)
+    block5 = dense_block(block5, 4)
 
-    block6 = Conv2D(1024, (1, 1), padding='same')(block5)
-    block6 = BatchNormalization()(block6)
+    # One activation map for each class.
+    block6 = bottleneck_layer(block5, 64)
     block6 = Dropout(0.5)(block6)
-    block6 = Lambda(K.relu)(block6)
-
-    block7 = Conv2D(config.num_classes, (1, 1), padding='same',
+    block6 = bottleneck_layer(block6, 128)
+    block6 = Dropout(0.5)(block6)
+    block6 = Conv2D(config.num_classes, (1, 1), padding='same',
                     activation='sigmoid', kernel_regularizer=l2(5e-5))(block6)
-    block7 = GlobalAveragePooling2D()(block7)
-
-    print(block1)
-    print(block2)
-    print(block3)
-    print(block4)
-    print(block5)
-    print(block6)
-    print(block7)
+    block6 = GlobalAveragePooling2D()(block6)
 
     # Pack it up in a model.
-    model = Model(inputs=[input_tensor], outputs=[block7])
-    model.compile(Adam(lr=1e-6), weighted_loss(), metrics=['binary_accuracy'])
+    model = Model(inputs=[input_tensor], outputs=[block6])
+    model.compile(Adam(lr=1e-3), weighted_loss(), metrics=['binary_accuracy'])
 
     if weights_path:
         model.load_weights(weights_path)
@@ -179,7 +171,7 @@ def load_image(image_path, augment=True, fileformat='%s/%s.jpg'):
     return image
 
 
-def batch_generator(labels, batch_size, weighted=True):
+def batch_generator(labels, batch_size, weighted=False):
     x = np.zeros([batch_size] + config.image_shape)
     y = np.zeros([batch_size] + [config.num_classes])
 
@@ -370,11 +362,11 @@ def main():
     np.random.seed(0)
     np.set_printoptions(precision=2)
 
-    model = build()
+    model = build(config.model_path)
     datagen, valid_datagen = get_datagen(config.train_path, config.batch_size)
 
     # Train the model.
-    train(model, datagen, valid_datagen)
+    # train(model, datagen, valid_datagen)
 
     # Find the optimal thresholds.
     test(model, datagen, valid_datagen)
