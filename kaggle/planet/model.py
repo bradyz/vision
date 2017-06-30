@@ -24,22 +24,24 @@ import helpers
 import metrics
 
 
-def weighted_loss(weighted=True, alpha=2.0):
+def weighted_loss(weighted=True, alpha=2.0, beta=1.0):
     def loss(y_true, y_pred):
         left = y_true * K.log(y_pred + K.epsilon())
         right = (1.0 - y_true) * K.log(1.0 - y_pred + K.epsilon())
 
-        log_loss = weights * K.mean(left, axis=0) + K.mean(right, axis=0)
+        # Weights will penalize missing a positive more.
+        if weighted:
+            weights = np.log(get_class_weight(helpers.get_labels(config.train_path)))
+            weights = weights / np.max(weights)
+
+            print(weights)
+        else:
+            weights = np.ones(config.num_classes)
+
+        log_loss = alpha * K.mean(left, axis=0) + beta * K.mean(right, axis=0)
+        log_loss = weights * log_loss
 
         return -1.0 * K.mean(log_loss)
-
-    # Weights will penalize missing a positive more.
-    if weighted:
-        weights = np.log(get_class_weight(helpers.get_labels(config.train_path)))
-    else:
-        weights = np.ones(config.num_classes)
-
-    weights = alpha * weights
 
     return loss
 
@@ -66,7 +68,7 @@ def resize(tensor, h, w):
     return Lambda(lambda x: tf.image.resize_images(x, (h, w)))(tensor)
 
 
-def bottleneck_layer(net, k, decay=5e-2):
+def bottleneck_layer(net, k, decay=5e-4):
     net = Conv2D(k // 2, (1, 1), padding='same', kernel_regularizer=l2(decay))(net)
     net = BatchNormalization()(net)
     net = Lambda(K.relu)(net)
@@ -78,7 +80,7 @@ def bottleneck_layer(net, k, decay=5e-2):
     return net
 
 
-def dense_block(net, k, n=2):
+def dense_block(net, k, n=3):
     for _ in range(n):
         net = Concatenate()([net, bottleneck_layer(net, k)])
 
@@ -87,7 +89,7 @@ def dense_block(net, k, n=2):
 
 def transition_block(net):
     net = BatchNormalization()(net)
-    net = Lambda(K.relu)(net)
+    net = Lambda(K.sigmoid)(net)
     net = AveragePooling2D()(net)
 
     return net
@@ -100,7 +102,7 @@ def build(weights_path=''):
     resnet = resnet50.ResNet50(input_tensor=input_tensor, include_top=False)
 
     for layer in resnet.layers:
-        layer.frozen = False
+        layer.trainable = False
 
     # Gather feature layers.
     features = [layer.output for layer in resnet.layers if layer.name in config.FEATURES]
@@ -114,32 +116,32 @@ def build(weights_path=''):
 
     # 112 x 112.
     block1 = relu_112
-    block1 = dense_block(block1, 4)
+    block1 = dense_block(block1, 8)
 
     # 56 x 56.
     block2 = transition_block(block1)
     block2 = Concatenate()([block2, relu_56])
-    block2 = dense_block(block2, 4)
+    block2 = dense_block(block2, 8)
 
     # 28 x 28.
     block3 = transition_block(block2)
     block3 = Concatenate()([block3, relu_28])
-    block3 = dense_block(block3, 4)
+    block3 = dense_block(block3, 8)
 
     # 14 x 14.
     block4 = transition_block(block3)
     block4 = Concatenate()([block4, relu_14])
-    block4 = dense_block(block4, 4)
+    block4 = dense_block(block4, 8)
 
     # 7 x 7.
     block5 = transition_block(block4)
     block5 = Concatenate()([block5, relu_7])
-    block5 = dense_block(block5, 4)
+    block5 = dense_block(block5, 8)
 
     # One activation map for each class.
-    block6 = bottleneck_layer(block5, 64)
+    block6 = bottleneck_layer(block5, 128)
     block6 = Dropout(0.5)(block6)
-    block6 = bottleneck_layer(block6, 128)
+    block6 = bottleneck_layer(block6, 256)
     block6 = Dropout(0.5)(block6)
     block6 = Conv2D(config.num_classes, (1, 1), padding='same',
                     activation='sigmoid', kernel_regularizer=l2(5e-5))(block6)
@@ -147,7 +149,7 @@ def build(weights_path=''):
 
     # Pack it up in a model.
     model = Model(inputs=[input_tensor], outputs=[block6])
-    model.compile(Adam(lr=1e-3), weighted_loss(), metrics=['binary_accuracy'])
+    model.compile(Adam(lr=2e-5), weighted_loss(), metrics=['binary_accuracy'])
 
     if weights_path:
         model.load_weights(weights_path)
@@ -201,12 +203,8 @@ def batch_generator(labels, batch_size, weighted=False):
         print(class_weight)
 
     while True:
-        index = 0
-
+        # Times each class has been seen.
         if weighted:
-            # np.random.shuffle(class_weight)
-
-            # Times each class has been seen.
             class_counts = np.zeros(class_weight.shape[0])
             class_index = 0
 
@@ -240,7 +238,7 @@ def get_datagen(train_path, batch_size, validation_split=0.2):
 
     index = round(validation_split * len(labels))
     datagen = batch_generator(labels[index:], batch_size, True)
-    valid_datagen = batch_generator(labels[:index], batch_size)
+    valid_datagen = batch_generator(labels[:index], batch_size, False)
 
     return datagen, valid_datagen
 
@@ -362,11 +360,11 @@ def main():
     np.random.seed(0)
     np.set_printoptions(precision=2)
 
-    model = build(config.model_path)
+    model = build()
     datagen, valid_datagen = get_datagen(config.train_path, config.batch_size)
 
     # Train the model.
-    # train(model, datagen, valid_datagen)
+    train(model, datagen, valid_datagen)
 
     # Find the optimal thresholds.
     test(model, datagen, valid_datagen)
