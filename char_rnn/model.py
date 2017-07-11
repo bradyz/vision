@@ -7,77 +7,80 @@ import keras
 import keras.backend as K
 
 
-def loss_function(mask_tensor, eps=1e-8):
-    def loss(y_true, y_pred):
-        return -K.mean(y_true * K.log(y_pred + eps)) * mask_tensor
+class SentenceSamplerCallback(keras.callbacks.Callback):
+    def __init__(self, start_phrase, char_to_idx, idx_to_char):
+        self.start_phrase = start_phrase
 
-    return loss
+        self.char_to_idx = char_to_idx
+        self.idx_to_char = idx_to_char
+
+    def on_epoch_end(self, epoch, logs):
+        strict = sample(self.model, self.start_phrase, self.char_to_idx,
+                        self.idx_to_char, strict=True)
+        not_strict = sample(self.model, self.start_phrase, self.char_to_idx,
+                            self.idx_to_char, strict=False)
+
+        print('epoch: %s' % epoch)
+        print('strict: %s' % strict)
+        print('not_strict: %s' % not_strict)
+        print()
 
 
-def build_model(input_shape):
-    input_tensor = keras.layers.Input(shape=input_shape)
-    mask_tensor = keras.layers.Input(shape=[input_shape[0]])
+def get_next_output(model, string, char_to_idx):
+    x = np.expand_dims(utils.encode(string, len(string), char_to_idx), axis=0)
+
+    # Model is predicting on batch of 1.
+    return np.squeeze(model.predict([x]), axis=0)
+
+
+def sample(model, start, char_to_idx, idx_to_char, total_chars=512, strict=True):
+    result = start
+
+    for i in range(total_chars - len(start)):
+        proba = get_next_output(model, result, char_to_idx)[-1]
+
+        if strict:
+            char = utils.decode_single(proba, idx_to_char)
+        else:
+            idx = np.random.choice(range(len(char_to_idx)), p=proba)
+            char = idx_to_char[idx]
+
+        result += char
+
+        if char == '<UNK>' or char == '<EOS>':
+            break
+
+    return result
+
+
+def build_model(num_chars):
+    input_tensor = keras.layers.Input(shape=(None, num_chars))
 
     net = input_tensor
-    net = keras.layers.LSTM(256, return_sequences=True)(net)
-    net = keras.layers.Dense(input_shape[1], activation='softmax')(net)
+    net = keras.layers.LSTM(256, return_sequences=True,
+                            recurrent_activation='sigmoid')(net)
+    net = keras.layers.LSTM(256, return_sequences=True,
+                            recurrent_activation='sigmoid')(net)
+    net = keras.layers.Dense(num_chars, activation='softmax')(net)
 
-    model = keras.models.Model(inputs=[input_tensor, mask_tensor],
-                               outputs=[net])
+    model = keras.models.Model(inputs=[input_tensor], outputs=[net])
 
     model.compile(optimizer='adam',
-                  loss=loss_function(mask_tensor),
+                  loss='categorical_crossentropy',
                   metrics=['accuracy'])
 
     return model
 
 
-def get_next_output(model, string, char_to_idx):
-    x = np.zeros((1, config.seq_length, len(char_to_idx)))
-
-    for i, char in enumerate(string):
-        x[0,i,char_to_idx[char]] = 1.0
-
-    mask = np.ones((1, config.seq_length))
-
-    # Model is predicting on batch of 1.
-    return model.predict([x, mask])[0]
-
-
-def sample(model, start, char_to_idx, idx_to_char, sample_size=32):
-    result = start
-
-    for i in range(sample_size):
-        output = utils.decode_output(
-                get_next_output(model, result, char_to_idx),
-                idx_to_char)
-
-        result += utils.decode_single(output[i], idx_to_char)
-
-    return result
-
-
 def train(model, datagen, char_to_idx, idx_to_char):
-    for iteration, x_y_mask in enumerate(datagen):
-        x, y, mask = x_y_mask
+    schedule_func = lambda epoch: 10 ** -(3 + epoch // 25)
+    scheduler = keras.callbacks.LearningRateScheduler(schedule_func)
 
-        model.train_on_batch([x, mask], [y])
+    sampler = SentenceSamplerCallback('Oh', char_to_idx, idx_to_char)
 
-        if iteration % 25 == 0:
-            sequences = model.predict([x, mask])
-
-            true = utils.decode_output(x[0], idx_to_char)
-            pred = utils.decode_output(sequences[0], idx_to_char)
-
-            print(true)
-            print(pred)
-            print()
-
-            char = utils.decode_single(x[0][0], idx_to_char)
-
-            tmp = sample(model, char, char_to_idx, idx_to_char)
-
-            print(tmp)
+    model.fit_generator(datagen, 500,
+                        epochs=100,
+                        callbacks=[sampler, scheduler])
 
 
 def main(csvfile, header):
@@ -90,7 +93,7 @@ def main(csvfile, header):
                               config.batch_size, config.seq_length)
 
     # Char-to-char RNN.
-    model = build_model((config.seq_length, len(char_to_idx)))
+    model = build_model(len(char_to_idx))
 
     train(model, datagen, char_to_idx, idx_to_char)
 
@@ -98,4 +101,5 @@ def main(csvfile, header):
 if __name__ == '__main__':
     np.random.seed(0)
 
-    main('Reviews.csv', 'Text')
+    main('scraped_lyrics.csv', 'lyrics')
+    # main('Reviews_clean.csv', 'Text')

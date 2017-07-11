@@ -1,2 +1,2 @@
-batch_size = 32
-seq_length = 64
+batch_size = 128
+seq_length = 256
