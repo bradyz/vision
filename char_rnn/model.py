@@ -76,16 +76,18 @@ def train(model, datagen, char_to_idx, idx_to_char):
     schedule_func = lambda epoch: 10 ** -(3 + epoch // 25)
     scheduler = keras.callbacks.LearningRateScheduler(schedule_func)
 
-    sampler = SentenceSamplerCallback('Oh', char_to_idx, idx_to_char)
+    sampler = SentenceSamplerCallback('Brady:', char_to_idx, idx_to_char)
 
-    model.fit_generator(datagen, 500,
+    model.fit_generator(datagen, 1000,
                         epochs=100,
                         callbacks=[sampler, scheduler])
 
 
-def main(csvfile, header):
+def main(filename, header=None):
     # Training data.
-    corpus = utils.load_csv(csvfile, header)
+    # corpus = utils.load_csv(filename, header)
+    corpus = utils.load_raw_text(filename)
+
     char_to_idx, idx_to_char = utils.get_mapping(corpus)
 
     # Yields training data.
@@ -101,5 +103,5 @@ def main(csvfile, header):
 if __name__ == '__main__':
     np.random.seed(0)
 
-    main('scraped_lyrics.csv', 'lyrics')
+    main('input.txt')
     # main('Reviews_clean.csv', 'Text')

@@ -53,3 +53,9 @@ Given an indicator function f(x, y) on a uniform grid, a level set can be extrac
 There are a total of 16 cases (2^4 in 2d, 2^8 in 3d).
 
 <img src="marching_squares/march.png" width="50%">
+
+### Char-RNN
+
+This is a generative model trained on a sequence-to-sequence classification task where the input is a sequence of tokens and the output is the next token.
+
+<img src="char_rnn/sample.png" width="50%">

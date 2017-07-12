@@ -21,6 +21,20 @@ def load_csv(filename, header, num_samples=None):
     return data
 
 
+def load_raw_text(filename, line_count=50):
+    corpus = list()
+    sample = ''
+
+    for i, row in enumerate(open(filename, 'r').read().split('\n')):
+        sample += row + '\n'
+
+        if i > 0 and i % line_count == 0:
+            corpus.append(sample)
+            sample = ''
+
+    return corpus
+
+
 def encode(sequence, seq_length, char_to_idx):
     x = np.zeros((seq_length, len(char_to_idx)), dtype=np.float32)
 
