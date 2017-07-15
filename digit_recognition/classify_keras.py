@@ -39,7 +39,7 @@ def load_model(used_saved=False):
     return model
 
 
-def get_datagen(n, batch_size=32, train=True, vgg=False):
+def get_datagen(n, batch_size=2, train=True, vgg=False):
     data = input_data.read_data_sets('MNIST_data/', one_hot=True)
 
     if train:
@@ -99,7 +99,6 @@ def train(model):
                                    tensorboard])
 
     model.save_weights(SAVE_FILE)
-    return
 
 
 def debug(model):

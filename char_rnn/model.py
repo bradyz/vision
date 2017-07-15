@@ -36,7 +36,7 @@ def get_next_output(model, string, char_to_idx):
 def sample(model, start, char_to_idx, idx_to_char, total_chars=512, strict=True):
     result = start
 
-    for i in range(total_chars - len(start)):
+    for _ in range(total_chars - len(start)):
         proba = get_next_output(model, result, char_to_idx)[-1]
 
         if strict:
