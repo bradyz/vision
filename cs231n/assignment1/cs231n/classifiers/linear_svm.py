@@ -61,7 +61,6 @@ def svm_loss_vectorized(W, X, y, reg):
     Inputs and outputs are the same as svm_loss_naive.
     """
     n = y.shape[0]
-    m = W.shape[1]
 
     y_hat = np.dot(X, W)
     y_star = np.expand_dims(y_hat[np.arange(n),y], axis=1)
@@ -74,9 +73,12 @@ def svm_loss_vectorized(W, X, y, reg):
     loss /= n
     loss += 0.5 * reg * np.sum(W * W)
 
-    # dW = np.zeros(W.shape)
-    # dW += np.dot(X.T, (mask * delta) > EPSILON)
-    # dW /= n
-    # dW += reg * W
+    L = (mask * delta > EPSILON).astype('float')
+    L[np.arange(n),y] = -np.sum(L, axis=1)
+
+    dW = np.zeros(W.shape)
+    dW += np.dot(X.T, L)
+    dW /= n
+    dW += reg * W
 
     return loss, dW
