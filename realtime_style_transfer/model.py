@@ -3,7 +3,7 @@ import os
 import numpy as np
 import tensorflow as tf
 
-from tensorflow.contrib.keras.python.keras.applications import vgg16
+from tensorflow.contrib.keras.python.keras.applications import vgg19
 
 from PIL import Image
 
@@ -16,7 +16,7 @@ def conv(x, k, c_out, stride=1, post_scope=''):
 
     with tf.variable_scope('conv%s' % post_scope):
         W = tf.get_variable('W', shape,
-                initializer=tf.truncated_normal_initializer(stddev=0.1))
+                initializer=tf.random_normal_initializer(stddev=0.01))
         b = tf.get_variable('b', [c_out], initializer=tf.constant_initializer(0.0))
 
         Wx = tf.nn.conv2d(x, W, strides=[1, stride, stride, 1], padding='SAME')
@@ -35,7 +35,8 @@ def conv3x3(x, c_out, post='', stride=1):
 
 def relu(x):
     with tf.name_scope('relu'):
-        y = tf.nn.relu(x)
+        y = tf.maximum(0.01 * x, x)
+        # y = tf.nn.relu(x)
 
     return y
 
@@ -44,10 +45,10 @@ def get_trainable_variables():
     weights = list()
     weights_names = set()
 
-    for op in tf.trainable_variables():
-        if 'decoder' not in op.name:
+    for op in tf.global_variables():
+        if op.name in weights_names:
             continue
-        elif op.name in weights_names:
+        elif 'decoder' not in op.name:
             continue
 
         weights.append(op)
@@ -56,12 +57,12 @@ def get_trainable_variables():
     return weights
 
 
-def get_activations(x_op, op_name, size=(112, 112)):
+def get_activations(x_op, op_name):
     with tf.name_scope('vgg_%s' % op_name):
         x_op = x_op[:, :, :, ::-1]
         x_op = x_op - (103.939, 116.779, 123.68)
 
-        vgg = vgg16.VGG16(include_top=False, input_tensor=x_op)
+        vgg = vgg19.VGG19(include_top=False, input_tensor=x_op)
 
     return vgg.get_layer('block4_conv1').output
 
@@ -78,7 +79,7 @@ def get_mean_std(x_op):
     return x_mean_op, x_std_op
 
 
-def adaIN(c_activations_op, s_activations_op, eps=1e-8):
+def adaIN(c_activations_op, s_activations_op, eps=1e-6):
     """
     Arguments:
         c_activations_op (tensor): of shape (n, h, w, c)
@@ -101,67 +102,83 @@ def adaIN(c_activations_op, s_activations_op, eps=1e-8):
 def feature_block(x, k, scope):
     with tf.variable_scope(scope):
         x = conv3x3(x, k, '_1')
-        x = relu(x)
-
         x = conv3x3(x, k, '_2')
         x = relu(x)
 
     return x
 
 
-def decode_block(x, k, scope):
+def residual_block(x, scope):
+    k = x.shape.as_list()[-1]
+
     with tf.variable_scope(scope):
-        h = conv1x1(x, k, '_1')
-        h = relu(h)
+        h = x
 
-        x = conv1x1(h, k // 2, '_2')
-        x = relu(x)
-
-        x = conv3x3(x, k // 2)
-        x = relu(x)
-
-        x = conv1x1(x, k, '_3')
-        x = relu(x)
+        x = conv1x1(x, k // 4, '_1')
+        x = conv3x3(x, k // 4)
+        x = conv1x1(x, k, '_2')
 
         x = x + h
-
-        x = bilinear_up(x, scope)
-        x = tf.maximum(0.01 * x, x)
+        x = relu(x)
 
     return x
 
 
-def bilinear_up(x, scope):
+def decode_block(x, scope):
+    with tf.variable_scope(scope):
+        x = bilinear_up(x, scope)
+
+    return x
+
+
+def bilinear_up(x):
     _, h, w, _ = x.shape.as_list()
 
-    with tf.variable_scope(scope):
-        x = tf.image.resize_images(x, [2 * h, 2 * w],
-                                   method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
-
-    return x
+    return tf.image.resize_images(x, [2 * h, 2 * w],
+            method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
 
 
 def get_decoder_output(t_op):
     with tf.variable_scope('decoder'):
         net = t_op
-        net = feature_block(net, 32, 'block1')
-        net = feature_block(net, 32, 'block2')
-        net = decode_block(net, 64, 'block3')
-        net = decode_block(net, 64, 'block4')
-        net = decode_block(net, 128, 'block5')
 
-        with tf.variable_scope('block6'):
-            net = conv1x1(net, 3)
-            net = (tf.nn.tanh(net) + 1.0) * 127.5
+        with tf.variable_scope('block1'):
+            net = conv3x3(net, 256)
+            net = relu(net)
+            net = bilinear_up(net)
+
+        with tf.variable_scope('block2'):
+            net = conv3x3(net, 256, '_1')
+            net = relu(net)
+            net = conv3x3(net, 256, '_2')
+            net = relu(net)
+            net = conv3x3(net, 256, '_3')
+            net = relu(net)
+            net = conv3x3(net, 128, '_4')
+            net = relu(net)
+            net = bilinear_up(net)
+
+        with tf.variable_scope('block3'):
+            net = conv3x3(net, 128, '_1')
+            net = relu(net)
+            net = conv3x3(net, 64, '_2')
+            net = relu(net)
+            net = bilinear_up(net)
+
+        with tf.variable_scope('block4'):
+            net = conv3x3(net, 64, '_1')
+            net = relu(net)
+            net = conv3x3(net, 3, '_2')
+            net = (tf.nn.tanh(net) + 1) * 255.0 / 2.0
 
     return net
 
 
-def mean_l2_diff(x, y, eps=1e-8):
+def mean_l2_diff(x, y):
     return tf.reduce_mean(tf.squared_difference(x, y))
 
 
-def get_loss_op(t_op, z_t_op, z_activations_op, s_activations_op):
+def get_loss_op(t_op, z_t_op, z_activations_op, s_activations_op, c_activations_op):
     with tf.name_scope('loss'):
        # 1st order characteristics of feature maps.
         s_activations_mean_op, s_activations_var_op = tf.nn.moments(s_activations_op,
@@ -172,9 +189,9 @@ def get_loss_op(t_op, z_t_op, z_activations_op, s_activations_op):
         style = mean_l2_diff(s_activations_mean_op, z_activations_mean_op) + \
                 mean_l2_diff(s_activations_var_op, z_activations_var_op)
 
-        content = mean_l2_diff(z_t_op, t_op)
+        content = mean_l2_diff(z_activations_op, c_activations_op)
 
-        style *= 1e-3 * 0.0
+        style *= 1e-1
         content *= 1
 
         loss = style + content
@@ -182,7 +199,10 @@ def get_loss_op(t_op, z_t_op, z_activations_op, s_activations_op):
     return loss, style, content
 
 
-def get_summary(c_op, s_op, z_op, loss_op, style_loss_op, content_loss_op):
+def get_summary(c_op, s_op, z_op, loss_op, style_loss_op, content_loss_op,
+                c_activations_op, s_activations_op, z_activations_op,
+                grad_var_op, learn_rate_op):
+    tf.summary.scalar('learn_rate', learn_rate_op)
     tf.summary.scalar('content_loss', content_loss_op)
     tf.summary.scalar('style_loss', style_loss_op)
     tf.summary.scalar('total_loss', loss_op)
@@ -190,6 +210,24 @@ def get_summary(c_op, s_op, z_op, loss_op, style_loss_op, content_loss_op):
     tf.summary.image('content', tf.cast(c_op, tf.uint8), 10)
     tf.summary.image('style', tf.cast(s_op, tf.uint8), 10)
     tf.summary.image('generated', tf.cast(z_op, tf.uint8), 10)
+
+    c_activations_op = tf.transpose(c_activations_op[:1], (3, 1, 2, 0))
+    s_activations_op = tf.transpose(s_activations_op[:1], (3, 1, 2, 0))
+    z_activations_op = tf.transpose(z_activations_op[:1], (3, 1, 2, 0))
+
+    tf.summary.image('c_activations', tf.cast(c_activations_op, tf.float32), 20)
+    tf.summary.image('s_activations', tf.cast(s_activations_op, tf.float32), 20)
+    tf.summary.image('z_activations', tf.cast(z_activations_op, tf.float32), 20)
+
+    for dx_x in grad_var_op:
+        dx, x = dx_x
+
+        relative_grad = tf.div(tf.abs(dx), abs(x) + 1e-7)
+        relative_grad_dead = tf.reduce_mean(tf.to_float(relative_grad > 1e-5))
+
+        tf.summary.histogram(x.name, x)
+        tf.summary.histogram('grad/' + x.name, relative_grad)
+        tf.summary.scalar('grad/' + x.name, relative_grad_dead)
 
     return tf.summary.merge_all()
 
@@ -237,13 +275,13 @@ def get_datagenerator(content_dir, style_dir, batch_size):
         yield c, s
 
 
-def main(save_name, batch_size=10):
+def main(save_name, batch_size=4):
     s_op = tf.placeholder(tf.float32, shape=[batch_size] + config.input_shape)
     s_activations_op = get_activations(s_op, 's')
 
     c_op = tf.placeholder(tf.float32, shape=[batch_size] + config.input_shape)
     c_activations_op = get_activations(c_op, 'c')
-    t_op = adaIN(c_activations_op, s_activations_op)
+    t_op = adaIN(c_activations_op, c_activations_op)
 
     # Generated.
     z_op = get_decoder_output(t_op)
@@ -254,7 +292,8 @@ def main(save_name, batch_size=10):
     loss_op, style_loss_op, content_loss_op = get_loss_op(t_op,
                                                           z_t_op,
                                                           z_activations_op,
-                                                          s_activations_op)
+                                                          s_activations_op,
+                                                          c_activations_op)
 
     # Used for saving and gradient descent.
     trainable_variables = get_trainable_variables()
@@ -266,16 +305,23 @@ def main(save_name, batch_size=10):
     with tf.name_scope('training'):
         step_op = tf.Variable(0, name='step', trainable=False)
         learn_rate_op = tf.train.exponential_decay(1e-4, step_op,
-                                                   10000, 0.1, staircase=True)
+                                                   5000, 0.1, staircase=True)
         optimizer_op = tf.train.AdamOptimizer(learn_rate_op)
-        train_op = optimizer_op.minimize(loss_op,
-                                         global_step=step_op,
-                                         var_list=trainable_variables)
+
+        grad_var_op = optimizer_op.compute_gradients(loss_op, var_list=trainable_variables)
+        clipped_grad_var_op = [(tf.clip_by_value(g, -.1, .1), v) for g, v in grad_var_op]
+        train_op = optimizer_op.apply_gradients(clipped_grad_var_op, global_step=step_op)
+        # train_op = optimizer_op.minimize(loss_op,
+        #                                  global_step=step_op,
+        #                                  var_list=trainable_variables)
 
     summary_op = get_summary(c_op, s_op, z_op, loss_op, style_loss_op,
-                             content_loss_op)
+                             content_loss_op,
+                             c_activations_op, s_activations_op, z_activations_op,
+                             grad_var_op, learn_rate_op)
 
     with tf.Session() as sess:
+        tf.set_random_seed(42)
         sess.run(tf.global_variables_initializer())
 
         summary_writer = tf.summary.FileWriter('.', sess.graph)
@@ -289,7 +335,7 @@ def main(save_name, batch_size=10):
 
         datagen = get_datagenerator('/root/content', '/root/style', batch_size)
 
-        for iteration in range(50000):
+        for iteration in range(200000):
             c, s = next(datagen)
 
             if iteration % 10 != 0:
