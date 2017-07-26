@@ -1,1 +1,1 @@
-input_shape = [512, 512, 3]
+input_shape = [256, 256, 3]
