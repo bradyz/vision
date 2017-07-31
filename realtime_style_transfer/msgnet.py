@@ -13,25 +13,31 @@ import config
 def conv(x, k, c_out, stride=1, post=''):
     c_in = x.get_shape().as_list()[-1]
 
-    # x = tf.pad(x, [[0, 0], [1, 1], [1, 1], [0, 0]], mode='REFLECT')
-    std = 0.1 / tf.sqrt(1.0 * k * k * c_in)
+    if k > 1:
+        x = tf.pad(x, [[0, 0], [k // 2, k // 2], [k // 2, k // 2], [0, 0]], mode='REFLECT')
+
+    std = 1.0 / tf.sqrt(1.0 * k * k * c_in / 2.0)
 
     with tf.variable_scope('conv%s' % post):
         W = tf.get_variable('W', [k, k, c_in, c_out],
-                initializer=tf.truncated_normal_initializer(stddev=0.02))
+                initializer=tf.random_normal_initializer(stddev=0.01))
+                # initializer=tf.truncated_normal_initializer(stddev=std))
+                # initializer=tf.truncated_normal_initializer(stddev=0.01))
                 # initializer=tf.random_uniform_initializer(-std, std))
                 # initializer=tf.contrib.layers.xavier_initializer_conv2d())
-        b = tf.get_variable('b', [c_out],
-                initializer=tf.constant_initializer(0.0))
+        # b = tf.get_variable('b', [c_out],
+        #         initializer=tf.constant_initializer(0.0))
 
-        Wx = tf.nn.conv2d(x, W, strides=[1, stride, stride, 1], padding='SAME')
-        y = tf.nn.bias_add(Wx, b)
+        Wx = tf.nn.conv2d(x, W, strides=[1, stride, stride, 1], padding='VALID')
+        y = Wx
+        # y = tf.nn.bias_add(Wx, b)
+        y = instance_normalization(y)
 
     return y
 
 
-def conv7x7(x, c_out, post=''):
-    return conv(x, 7, c_out, post='_7x7' + post)
+def conv9x9(x, c_out, post=''):
+    return conv(x, 9, c_out, post='_9x9' + post)
 
 
 def conv3x3(x, c_out, stride=1, post=''):
@@ -44,7 +50,6 @@ def conv1x1(x, c_out, stride=1, post=''):
 
 def relu(x):
     with tf.name_scope('relu'):
-        # y = tf.maximum(0.01 * x, x)
         y = tf.nn.relu(x)
 
     return y
@@ -52,10 +57,10 @@ def relu(x):
 def gram_matrix(x):
     n, h, w, c = x.shape.as_list()
 
-    u = tf.transpose(x, [0, 3, 1, 2])
-    u = tf.reshape(u, [n, c, h * w])
+    u = tf.reshape(x, [n, h * w, c])
+    u_transpose = tf.transpose(u, [0, 2, 1])
 
-    return tf.matmul(u, tf.transpose(u, [0, 2, 1])) / (h * w * c)
+    return tf.matmul(u_transpose, u) / (1.0 * h * w)
 
 
 def get_trainable_variables():
@@ -84,14 +89,16 @@ def get_activations(x_op, op_name):
     return vgg.layers
 
 
-def instance_normalization(x, post='', eps=1e-8):
+def instance_normalization(x, post='', eps=1e-3):
+    channels = [x.shape.as_list()[-1]]
+
     with tf.variable_scope('in%s' % post):
         x_mean, x_var = tf.nn.moments(x, axes=(1, 2), keep_dims=True)
         x_std = tf.sqrt(x_var + eps)
 
-        gamma = tf.get_variable('gamma', x_std.shape.as_list(),
+        gamma = tf.get_variable('gamma', channels,
                 initializer=tf.constant_initializer(1.0))
-        beta = tf.get_variable('beta', x_mean.shape.as_list(),
+        beta = tf.get_variable('beta', channels,
                 initializer=tf.constant_initializer(0.0))
 
         x = (x - x_mean) / x_std
@@ -100,47 +107,52 @@ def instance_normalization(x, post='', eps=1e-8):
     return x
 
 
-def residual_block(x, k, post=''):
-    with tf.variable_scope('residual_down%s' % post):
-        x_id = x
-        x_id = bilinear_up(x_id, 0.5)
+def residual_block(x, k, repeat=2, post=''):
+    # with tf.variable_scope('residual%s' % post):
+    #     x = conv3x3(x, k)
+    #     x = relu(x)
 
-        x = conv1x1(x, k // 4, post='_1')
-        x = conv3x3(x, k // 4, 2)
-        x = conv1x1(x, k, post='_2')
+    for i in range(repeat):
+        with tf.variable_scope('residual%s_%d' % (post, i)):
+            x_id = x
 
-        x = tf.concat([x_id, x], axis=3)
-        x = conv1x1(x, k, post='_3')
-        x = relu(x)
+            x = conv3x3(x, k, post='_1')
+            x = relu(x)
+            x = conv3x3(x, k, post='_2')
 
-    return x
-
-
-def residual_block_up(x, k, post=''):
-    with tf.variable_scope('residual_up%s' % post):
-        x_id = x
-        x_id = bilinear_up(x_id)
-
-        x = conv1x1(x, k // 4, post='_1')
-        x = conv3x3(x, k // 4)
-        x = conv1x1(x, k, post='_2')
-        x = bilinear_up(x)
-
-        x = tf.concat([x_id, x], axis=3)
-        x = conv1x1(x, k, post='_3')
-        x = relu(x)
-        x = instance_normalization(x)
+            x = x_id + x
 
     return x
 
 
-def bilinear_up(x, s=2):
+def bilinear(x, scale):
     _, h, w, _ = x.shape.as_list()
+    h_new, w_new = int(scale * h), int(scale * w)
 
-    h_new, w_new = int(s * h), int(s * w)
+    return tf.image.resize_nearest_neighbor( x, [h_new, w_new])
 
-    return tf.image.resize_images(x, [h_new, w_new],
-            method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
+
+def bilinear_up(x):
+    return bilinear(x, 2)
+
+
+def bilinear_down(x):
+    return bilinear(x, 0.5)
+
+
+def down_block(x, k, post=''):
+    x = conv3x3(x, k, 2, post=post)
+    x = relu(x)
+
+    return x
+
+
+def up_block(x, k, post=''):
+    x = conv3x3(x, k, post=post)
+    x = relu(x)
+    x = bilinear_up(x)
+
+    return x
 
 
 def inspiration_layer(x, s_gram, post=''):
@@ -149,27 +161,19 @@ def inspiration_layer(x, s_gram, post=''):
     with tf.variable_scope('inspiration%s' % post):
         x = tf.reshape(x, [n, h * w, c])
 
-        std_U = 1.0 / tf.sqrt(64 / 2.0)
-        std_V = 1.0 / tf.sqrt(128 / 2.0)
-        std_W = 1.0 / tf.sqrt(c / 2.0)
+        std = 1.0 / tf.sqrt(1.0 * c / 2.0)
 
-        U = tf.get_variable('U', [c, 64],
-                initializer=tf.truncated_normal_initializer(stddev=0.02))
-                # initializer=tf.random_uniform_initializer(-std_U, std_U))
-        V = tf.get_variable('V', [64, 128],
-                initializer=tf.truncated_normal_initializer(stddev=0.02))
-                # initializer=tf.random_uniform_initializer(-std_V, std_V))
-        W = tf.get_variable('W', [128, c],
-                initializer=tf.truncated_normal_initializer(stddev=0.02))
-                # initializer=tf.random_uniform_initializer(-std_W, std_W))
+        W = tf.get_variable('W', [c, c],
+                initializer=tf.random_normal_initializer(stddev=0.01))
+                # initializer=tf.truncated_normal_initializer(stddev=std))
+                # initializer=tf.truncated_normal_initializer(stddev=0.01))
 
+        # b = tf.get_variable('b', [c],
+        #         initializer=tf.constant_initializer(0.0))
+        # WG = tf.map_fn(lambda gram: tf.matmul(W, gram) + b, s_gram)
         WG = tf.map_fn(lambda gram: tf.matmul(W, gram), s_gram)
-        VWG = tf.map_fn(lambda WG_prime: tf.matmul(V, WG_prime), WG)
-        VWG = tf.nn.relu(VWG)
 
-        UVWG = tf.map_fn(lambda VWG_prime: tf.matmul(U, VWG_prime), VWG)
-
-        x = tf.matmul(x, UVWG)
+        x = tf.matmul(x, WG)
         x = tf.reshape(x, [n, h, w, c])
         x = instance_normalization(x)
 
@@ -178,46 +182,30 @@ def inspiration_layer(x, s_gram, post=''):
 
 def get_decoder_output(c_op, s_gram_list):
     with tf.variable_scope('decoder'):
-        debug = list()
-
         with tf.variable_scope('block1'):
             block1 = (c_op / 255.0) - 0.5
-            block1 = conv7x7(block1, 64)
-            block1 = inspiration_layer(block1, s_gram_list[0])
-            block1 = residual_block(block1, 128)
+            block1 = conv9x9(block1, 64)
+            block1 = down_block(block1, 64, post='_1')
+            block1 = down_block(block1, 128, post='_2')
+            block1 = residual_block(block1, 128, repeat=5)
 
-        with tf.variable_scope('block2'):
-            block2 = block1
-            block2 = inspiration_layer(block2, s_gram_list[1])
-            block2 = residual_block(block2, 256)
-
-        with tf.variable_scope('block3'):
-            block3 = block2
-            block3 = inspiration_layer(block3, s_gram_list[2])
-            block3 = residual_block(block3, 512)
-
-        with tf.variable_scope('block4'):
-            block4 = block3
-            block4 = inspiration_layer(block4, s_gram_list[3])
-            block4 = residual_block_up(block4, 256, post='_1')
-            block4 = residual_block_up(block4, 128, post='_2')
-            block4 = residual_block_up(block4, 64, post='_3')
-            block4 = conv7x7(block4, 3)
+        with tf.variable_scope('block5'):
+            block2 = up_block(block1, 64, post='_1')
+            block2 = up_block(block2, 32, post='_2')
+            block2 = conv9x9(block2, 3)
 
         with tf.variable_scope('predictions'):
-            block5 = (tf.nn.tanh(block4) + 1.0) * 255.0 / 2.0
+            block3 = (tf.nn.tanh(block2) + 1.0) * 255.0 / 2.0
 
     net_layers = {'block1': block1,
                   'block2': block2,
-                  'block3': block3,
-                  'block4': block4,
-                  'block5': block5}
+                  'block3': block3}
 
-    return block5, net_layers, debug
+    return block3, net_layers
 
 
 def mean_l2_diff(x, y):
-    return tf.reduce_mean(tf.squared_difference(x, y))
+    return tf.reduce_mean(tf.square(x - y))
 
 
 def get_loss_op(z_op, z_layer_list, z_gram_list, c_layer_list, s_gram_list):
@@ -232,42 +220,35 @@ def get_loss_op(z_op, z_layer_list, z_gram_list, c_layer_list, s_gram_list):
         for z_gram, s_gram in zip(z_gram_list, s_gram_list):
             style_loss_op += mean_l2_diff(z_gram, s_gram)
 
-        variation_loss_op = tf.reduce_mean(tf.image.total_variation(z_op))
+        style_loss_op = 2e-5 * style_loss_op
+        content_loss_op = 1e0 * content_loss_op
 
-        style_loss_op = 1e2 * style_loss_op
-        content_loss_op = 1e1 * content_loss_op
-        variation_loss_op = 1e-6 * variation_loss_op
+        loss_op = style_loss_op + content_loss_op
 
-        loss_op = style_loss_op + content_loss_op + variation_loss_op
-
-    return loss_op, style_loss_op, content_loss_op, variation_loss_op
+    return loss_op, style_loss_op, content_loss_op
 
 
 def get_summary(c_op, c_layer_list, s_op, s_gram_list,
-                z_op, z_layer_list, z_gram_list, z_net_layers, z_debug, layer_names,
-                loss_op, style_loss_op, content_loss_op, variation_loss_op,
+                z_op, z_layer_list, z_gram_list, z_net_layers, layer_names,
+                loss_op, style_loss_op, content_loss_op,
                 learn_rate_op, grad_var_op):
     tf.summary.scalar('learn_rate', learn_rate_op)
 
     tf.summary.scalar('content_loss', content_loss_op)
     tf.summary.scalar('style_loss', style_loss_op)
-    tf.summary.scalar('variation_loss', variation_loss_op)
     tf.summary.scalar('total_loss', loss_op)
 
     tf.summary.image('content', tf.cast(c_op, tf.uint8), 10)
     tf.summary.image('style', tf.cast(s_op, tf.uint8), 10)
-    tf.summary.image('generated', tf.cast(tf.clip_by_value(z_op, 0.0, 255.0), tf.uint8), 10)
+    tf.summary.image('generated', tf.cast(z_op, tf.uint8), 10)
 
     tf.summary.histogram('colors/content', c_op)
     tf.summary.histogram('colors/style', s_op)
     tf.summary.histogram('colors/generated', z_op)
 
-    for name, op in z_debug:
-        tf.summary.histogram(name, op)
-
     for i, layer_name in enumerate(layer_names):
-        c_layer_op = tf.transpose(c_layer_list[0][:1], (3, 1, 2, 0))
-        z_layer_op = tf.transpose(z_layer_list[0][:1], (3, 1, 2, 0))
+        c_layer_op = tf.transpose(c_layer_list[i][:1], (3, 1, 2, 0))
+        z_layer_op = tf.transpose(z_layer_list[i][:1], (3, 1, 2, 0))
 
         tf.summary.image('c_activations/' + layer_name, tf.to_float(c_layer_op), 30)
         tf.summary.image('z_activations/' + layer_name, tf.to_float(z_layer_op), 30)
@@ -288,8 +269,8 @@ def get_summary(c_op, c_layer_list, s_op, s_gram_list,
     for dx_x in grad_var_op:
         dx, x = dx_x
 
-        relative_grad = tf.div(tf.abs(dx), abs(x) + 1e-7)
-        relative_grad_alive = tf.reduce_mean(tf.to_float(relative_grad > 1e-5))
+        relative_grad = learn_rate_op * tf.div(tf.abs(dx), abs(x) + 1e-7)
+        relative_grad_alive = tf.reduce_mean(tf.to_float(relative_grad > 1e-4))
 
         tf.summary.scalar('grad/' + x.name, relative_grad_alive)
         tf.summary.histogram('weight/' + x.name, x)
@@ -343,15 +324,16 @@ def get_datagenerator(content_dir, style_dir, batch_size):
 
         for i in range(batch_size):
             c_list[i] = get_random_valid_image(content_paths)
-            s_list[i] = get_random_valid_image(style_paths)
+            # s_list[i] = get_random_valid_image(style_paths)
 
 
 def get_layers(activations, layer_names):
     return [op.output for op in activations if op.name in layer_names]
 
 
-def main(save_name, batch_size=10):
-    layer_names = ['block1_conv2', 'block2_conv2', 'block3_conv3', 'block4_conv3']
+def main(save_name, batch_size=4):
+    layer_names = ['block1_conv1', 'block2_conv1', 'block3_conv3', 'block4_conv3',
+                   'block5_conv2']
 
     # The content source and activations.
     c_op = tf.placeholder(tf.float32, shape=[batch_size] + config.input_shape)
@@ -362,19 +344,17 @@ def main(save_name, batch_size=10):
     s_op = tf.placeholder(tf.float32, shape=[batch_size] + config.input_shape)
     s_activations = get_activations(s_op, 's')
     s_gram_list = [gram_matrix(op) for op in get_layers(s_activations, layer_names)]
-    s_gram_list.append(gram_matrix(s_op))
 
     # Generated, activations, gram matrices.
-    z_op, z_net_layers, z_debug = get_decoder_output(c_op, s_gram_list)
+    z_op, z_net_layers = get_decoder_output(c_op, s_gram_list)
     z_activations = get_activations(z_op, 'z')
     z_layer_list = get_layers(z_activations, layer_names)
     z_gram_list = [gram_matrix(op) for op in z_layer_list]
-    z_gram_list.append(gram_matrix(z_op))
 
-    # Content, style, variation.
-    loss_op, style_loss_op, content_loss_op, variation_loss_op = get_loss_op(
-            z_op, [z_layer_list[1]], z_gram_list,
-            [c_layer_list[1]], s_gram_list)
+    # Content, style.
+    loss_op, style_loss_op, content_loss_op = get_loss_op(
+            z_op, [z_layer_list[3]], z_gram_list,
+            [c_layer_list[3]], s_gram_list)
 
     # Used for saving and gradient descent.
     train_vars = get_trainable_variables()
@@ -385,15 +365,15 @@ def main(save_name, batch_size=10):
     # All things training related.
     with tf.name_scope('training'):
         step_op = tf.Variable(0, name='step', trainable=False)
-        learn_rate_op = tf.train.exponential_decay(1e-4, step_op,
-                                                   10000, 0.1, staircase=True)
+        learn_rate_op = tf.train.exponential_decay(2e-7, step_op,
+                                                   100000, 0.1, staircase=True)
         optimizer_op = tf.train.AdamOptimizer(learn_rate_op)
         grad_var_op = optimizer_op.compute_gradients(loss_op, var_list=train_vars)
         train_op = optimizer_op.apply_gradients(grad_var_op, global_step=step_op)
 
     summary_op = get_summary(c_op, c_layer_list, s_op, s_gram_list,
-                             z_op, z_layer_list, z_gram_list, z_net_layers, z_debug, layer_names,
-                             loss_op, style_loss_op, content_loss_op, variation_loss_op,
+                             z_op, z_layer_list, z_gram_list, z_net_layers, layer_names,
+                             loss_op, style_loss_op, content_loss_op,
                              learn_rate_op, grad_var_op)
 
     with tf.Session() as sess:
@@ -426,7 +406,7 @@ def main(save_name, batch_size=10):
 
 
 if __name__ == '__main__':
-    np.random.seed(0)
+    np.random.seed(1)
     tf.set_random_seed(0)
 
     main('model')
