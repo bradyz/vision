@@ -3,7 +3,7 @@ import os
 import numpy as np
 import tensorflow as tf
 
-from tensorflow.contrib.keras.python.keras.applications import vgg19
+import vgg19
 
 from PIL import Image
 
@@ -20,11 +20,12 @@ def conv(x, k, c_out, stride=1, normalize=True, post=''):
 
     with tf.variable_scope('conv%s' % post):
         W = tf.get_variable('W', [k, k, c_in, c_out],
+                initializer=tf.contrib.layers.variance_scaling_initializer())
                 # initializer=tf.random_normal_initializer(stddev=0.01))
                 # initializer=tf.truncated_normal_initializer(stddev=std))
                 # initializer=tf.truncated_normal_initializer(stddev=0.1))
                 # initializer=tf.random_uniform_initializer(-std, std))
-                initializer=tf.contrib.layers.xavier_initializer_conv2d())
+                # initializer=tf.contrib.layers.xavier_initializer_conv2d())
         # b = tf.get_variable('b', [c_out],
         #         initializer=tf.constant_initializer(0.0))
 
@@ -62,7 +63,7 @@ def gram_matrix(x):
     u = tf.reshape(x, [n, h * w, c])
     u_transpose = tf.transpose(u, [0, 2, 1])
 
-    return tf.matmul(u_transpose, u)
+    return tf.matmul(u_transpose, u) / (h * w * c)
 
 
 def get_trainable_variables():
@@ -81,15 +82,13 @@ def get_trainable_variables():
     return weights
 
 
-def get_activations(x_op, op_name):
-    with tf.name_scope('vgg_%s' % op_name):
-        x_op = x_op[:, :, :, ::-1]
-        x_op = x_op - (103.939, 116.78, 123.68)
+def get_activations(vgg, x_op, scope):
+        # x_op = x_op[:, :, :, ::-1]
+    x_op = x_op - (103.939, 116.78, 123.68)
         # x_op = x_op - 255.0 / 2.0
+        # vgg = vgg19.VGG19(include_top=False, input_tensor=x_op)
 
-        vgg = vgg19.VGG19(include_top=False, input_tensor=x_op)
-
-    return vgg.layers
+    return vgg.feed_forward(x_op, scope)
 
 
 def instance_normalization(x, post='', eps=1e-4):
@@ -163,7 +162,8 @@ def inspiration_layer(x, s_gram, post=''):
         std = 1.0 / tf.sqrt(1.0 * c / 2.0)
 
         W = tf.get_variable('W', [c, c],
-                initializer=tf.random_normal_initializer(stddev=0.01))
+                initializer=tf.contrib.layers.variance_scaling_initializer())
+                # initializer=tf.random_normal_initializer(stddev=0.01))
                 # initializer=tf.truncated_normal_initializer(stddev=std))
                 # initializer=tf.truncated_normal_initializer(stddev=0.01))
 
@@ -182,16 +182,25 @@ def inspiration_layer(x, s_gram, post=''):
 def get_decoder_output(c_op, s_gram_list):
     with tf.variable_scope('decoder'):
         with tf.variable_scope('block1'):
-            block1 = (c_op / 255.0) - 0.5
+            block1 = (c_op / 255.0)
             block1 = conv9x9(block1, 32, True)
             block1 = relu(block1)
+
             block1 = down_block(block1, 64, post='_1')
+            block1 = inspiration_layer(block1, s_gram_list[0], '_1')
+
             block1 = down_block(block1, 128, post='_2')
-            block1 = residual_block(block1, 128, repeat=5)
+            block1 = inspiration_layer(block1, s_gram_list[1], '_2')
+
+            block1 = down_block(block1, 256, post='_3')
+            block1 = inspiration_layer(block1, s_gram_list[2], '_3')
+
+            block1 = residual_block(block1, 256, repeat=5)
 
         with tf.variable_scope('block2'):
-            block2 = up_block(block1, 64, post='_1')
-            block2 = up_block(block2, 32, post='_2')
+            block2 = up_block(block1, 128, post='_1')
+            block2 = up_block(block2, 64, post='_2')
+            block2 = up_block(block2, 32, post='_3')
             block2 = conv9x9(block2, 3, False)
 
         with tf.variable_scope('predictions'):
@@ -209,7 +218,7 @@ def mean_l2_diff(x, y):
     return tf.reduce_mean(tf.square(x - y))
 
 
-def get_loss_op(z_op, z_layer_list, z_gram_list, c_layer_list, s_gram_list):
+def get_loss_op(z_op, z_layer_list, z_gram_list, c_layer_list, s_gram_list, gram_weights):
     with tf.name_scope('loss'):
         content_loss_op = 0.0
 
@@ -218,11 +227,11 @@ def get_loss_op(z_op, z_layer_list, z_gram_list, c_layer_list, s_gram_list):
 
         style_loss_op = 0.0
 
-        for z_gram, s_gram in zip(z_gram_list, s_gram_list):
-            style_loss_op += mean_l2_diff(z_gram, s_gram)
+        for z_gram, s_gram, weight in zip(z_gram_list, s_gram_list, gram_weights):
+            style_loss_op += weight * mean_l2_diff(z_gram, s_gram)
 
-        style_loss_op = 1e2 * style_loss_op
-        content_loss_op = 7e0 * content_loss_op
+        style_loss_op = 2e0 * style_loss_op
+        content_loss_op = 1e0 * content_loss_op
 
         loss_op = style_loss_op + content_loss_op
 
@@ -282,12 +291,16 @@ def get_summary(c_op, c_layer_list, s_op, s_gram_list,
     return tf.summary.merge_all()
 
 
-def load_image(path):
-    x = np.float32(Image.open(path))
+def load_image(path, resize):
+    x = Image.open(path)
 
-    if x.ndim != 3:
+    if len(x.getbands()) != 3:
         return None
 
+    if resize:
+        return np.float32(x.resize((256, 256)))
+
+    x = np.float32(x)
     h, w, _ = config.input_shape
 
     if x.shape[0] <= h or x.shape[1] <= w:
@@ -298,65 +311,68 @@ def load_image(path):
 
     return x[i:i+h,j:j+w]
 
+    return x
+
 
 def get_datagenerator(content_dir, style_dir, batch_size):
-    def get_random_valid_image(paths):
-        tmp = load_image(np.random.choice(paths))
+    def get_random_valid_image(paths, resize=True):
+        tmp = load_image(np.random.choice(paths), resize)
 
         while tmp is None:
-            tmp = load_image(np.random.choice(paths))
+            tmp = load_image(np.random.choice(paths), resize)
 
         return tmp
 
     content_paths = [os.path.join(content_dir, x) for x in os.listdir(content_dir)]
     style_paths = [os.path.join(style_dir, x) for x in os.listdir(style_dir)]
-
-    c_list = [get_random_valid_image(content_paths) for _ in range(batch_size)]
-    s_list = [get_random_valid_image(style_paths) for _ in range(batch_size)]
+    s_list = [get_random_valid_image(style_paths) for _ in range(len(style_paths))]
 
     c = np.zeros([batch_size] + config.input_shape)
     s = np.zeros([batch_size] + config.input_shape)
 
     while True:
         for i in range(batch_size):
-            c[i] = c_list[i]
-            s[i] = s_list[i]
+            c[i] = get_random_valid_image(content_paths, False)
+            s[i] = s_list[np.random.randint(len(s_list))]
 
         yield c, s
 
-        for i in range(batch_size):
-            c_list[i] = get_random_valid_image(content_paths)
-            # s_list[i] = get_random_valid_image(style_paths)
-
 
 def get_layers(activations, layer_names):
-    return [op.output for op in activations if op.name in layer_names]
+    return [activations[name] for name in layer_names]
+    # return [op.output for op in activations if op.name in layer_names]
 
 
-def main(save_name, batch_size=4):
-    layer_names = ['block1_conv2', 'block2_conv2', 'block3_conv2', 'block4_conv2',
-                   'block5_conv2']
+def main(save_name, batch_size=20):
+    # layer_names = ['block1_conv2', 'block2_conv2', 'block3_conv2', 'block4_conv2',
+    #                'block5_conv2']
+
+    layer_names = ['relu1_1', 'relu2_1', 'relu3_1', 'relu4_1']
+    gram_weights = [1e-4, 1e-4, 1e4, 1e4]
+    # layer_names = ['relu1_1', 'relu2_1', 'relu3_1', 'relu4_1', 'relu5_1']
+
+    vgg = vgg19.VGG19('imagenet-vgg-verydeep-19.mat')
 
     # The content source and activations.
     c_op = tf.placeholder(tf.float32, shape=[batch_size] + config.input_shape)
-    c_activations = get_activations(c_op, 'c')
+    c_activations = get_activations(vgg, c_op, 'c')
     c_layer_list = get_layers(c_activations, layer_names)
 
     # The style source and gram matrices.
     s_op = tf.placeholder(tf.float32, shape=[batch_size] + config.input_shape)
-    s_activations = get_activations(s_op, 's')
+    s_activations = get_activations(vgg, s_op, 's')
     s_gram_list = [gram_matrix(op) for op in get_layers(s_activations, layer_names)]
 
     # Generated, activations, gram matrices.
     z_op, z_net_layers = get_decoder_output(c_op, s_gram_list)
-    z_activations = get_activations(z_op, 'z')
+    z_activations = get_activations(vgg, z_op, 'z')
     z_layer_list = get_layers(z_activations, layer_names)
     z_gram_list = [gram_matrix(op) for op in z_layer_list]
 
     # Content, style.
     loss_op, style_loss_op, content_loss_op = get_loss_op(
             z_op, [z_layer_list[3]], z_gram_list,
-            [c_layer_list[3]], s_gram_list)
+            [c_layer_list[3]], s_gram_list, gram_weights)
 
     # Used for saving and gradient descent.
     train_vars = get_trainable_variables()
@@ -367,7 +383,7 @@ def main(save_name, batch_size=4):
     # All things training related.
     with tf.name_scope('training'):
         step_op = tf.Variable(0, name='step', trainable=False)
-        learn_rate_op = tf.train.exponential_decay(1e-4, step_op,
+        learn_rate_op = tf.train.exponential_decay(1e-3, step_op,
                                                    100000, 0.1, staircase=True)
         optimizer_op = tf.train.AdamOptimizer(learn_rate_op)
         grad_var_op = optimizer_op.compute_gradients(loss_op, var_list=train_vars)
