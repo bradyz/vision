@@ -7,6 +7,8 @@ import vgg19
 
 from PIL import Image
 
+from matplotlib import pyplot as plt
+
 import config
 
 
@@ -83,7 +85,7 @@ def get_trainable_variables():
 
 
 def get_activations(vgg, x_op, scope):
-        # x_op = x_op[:, :, :, ::-1]
+    x_op = x_op[:, :, :, ::-1]
     x_op = x_op - (103.939, 116.78, 123.68)
         # x_op = x_op - 255.0 / 2.0
         # vgg = vgg19.VGG19(include_top=False, input_tensor=x_op)
@@ -230,7 +232,7 @@ def get_loss_op(z_op, z_layer_list, z_gram_list, c_layer_list, s_gram_list, gram
         for z_gram, s_gram, weight in zip(z_gram_list, s_gram_list, gram_weights):
             style_loss_op += weight * mean_l2_diff(z_gram, s_gram)
 
-        style_loss_op = 2e0 * style_loss_op
+        style_loss_op = 1e0 * style_loss_op
         content_loss_op = 1e0 * content_loss_op
 
         loss_op = style_loss_op + content_loss_op
@@ -291,14 +293,14 @@ def get_summary(c_op, c_layer_list, s_op, s_gram_list,
     return tf.summary.merge_all()
 
 
-def load_image(path, resize):
+def load_image(path, resize=None):
     x = Image.open(path)
 
     if len(x.getbands()) != 3:
         return None
 
     if resize:
-        return np.float32(x.resize((256, 256)))
+        return np.float32(x.resize(resize))
 
     x = np.float32(x)
     h, w, _ = config.input_shape
@@ -311,11 +313,9 @@ def load_image(path, resize):
 
     return x[i:i+h,j:j+w]
 
-    return x
-
 
 def get_datagenerator(content_dir, style_dir, batch_size):
-    def get_random_valid_image(paths, resize=True):
+    def get_random_valid_image(paths, resize=(512, 512)):
         tmp = load_image(np.random.choice(paths), resize)
 
         while tmp is None:
@@ -332,7 +332,7 @@ def get_datagenerator(content_dir, style_dir, batch_size):
 
     while True:
         for i in range(batch_size):
-            c[i] = get_random_valid_image(content_paths, False)
+            c[i] = get_random_valid_image(content_paths)
             s[i] = s_list[np.random.randint(len(s_list))]
 
         yield c, s
@@ -343,13 +343,69 @@ def get_layers(activations, layer_names):
     # return [op.output for op in activations if op.name in layer_names]
 
 
-def main(save_name, batch_size=20):
-    # layer_names = ['block1_conv2', 'block2_conv2', 'block3_conv2', 'block4_conv2',
-    #                'block5_conv2']
+def plot_image(image):
+    x = np.squeeze(image)
+    x = np.uint8(x)
 
-    layer_names = ['relu1_1', 'relu2_1', 'relu3_1', 'relu4_1']
-    gram_weights = [1e-4, 1e-4, 1e4, 1e4]
-    # layer_names = ['relu1_1', 'relu2_1', 'relu3_1', 'relu4_1', 'relu5_1']
+    plt.xticks([])
+    plt.yticks([])
+    plt.imshow(x)
+
+
+def run_loop():
+    layer_names = ['relu1_1', 'relu2_1', 'relu3_1', 'relu4_1', 'relu5_1']
+    gram_weights = [1e-2, 1e1, 1e1, 4e0, 1e1]
+
+    vgg = vgg19.VGG19('imagenet-vgg-verydeep-19.mat')
+
+
+    with tf.Session() as sess:
+        hack = False
+
+        while True:
+            print('Enter a content and style path.')
+            content_path, style_path = input().split()
+
+            c = np.expand_dims(np.float32(Image.open(content_path)), axis=0)
+            s = np.expand_dims(np.float32(Image.open(style_path)), axis=0)
+
+            # The content source and activations.
+            c_op = tf.placeholder(tf.float32, shape=[1, c.shape[1], c.shape[2], 3])
+
+            # The style source and gram matrices.
+            s_op = tf.placeholder(tf.float32, shape=[1, s.shape[1], s.shape[2], 3])
+            s_activations = get_activations(vgg, s_op, 's')
+            s_gram_list = [gram_matrix(op) for op in get_layers(s_activations, layer_names)]
+
+            # Generated, activations, gram matrices.
+            z_op, z_net_layers = get_decoder_output(c_op, s_gram_list)
+
+            if not hack:
+                hack = True
+
+                saver = tf.train.Saver()
+                saver.restore(sess, 'model_decent_v3')
+
+            try:
+                z = sess.run(z_op, {c_op: c, s_op: s})
+
+                plt.subplot2grid((3, 2), (0, 0))
+                plot_image(c)
+
+                plt.subplot2grid((3, 2), (0, 1))
+                plot_image(s)
+
+                plt.subplot2grid((3, 2), (1, 0), colspan=2, rowspan=2)
+                plot_image(z)
+
+                plt.show()
+            except Exception as e:
+                print(e)
+
+
+def main(save_name, batch_size=4):
+    layer_names = ['relu1_1', 'relu2_1', 'relu3_1', 'relu4_1', 'relu5_1']
+    gram_weights = [1e-2, 1e1, 1e1, 8e0, 1e1]
 
     vgg = vgg19.VGG19('imagenet-vgg-verydeep-19.mat')
 
@@ -401,30 +457,33 @@ def main(save_name, batch_size=20):
         saver = tf.train.Saver(train_vars)
 
         try:
-            saver.restore(sess, save_name)
-            print('loaded %s.' % save_name)
-        except:
-            print('failed to load %s.' % save_name)
+            saver.restore(sess, 'model_decent_v7')
+            print('Loaded %s.' % save_name)
+        except Exception as e:
+            print(e)
+            print('Failed to load %s.' % save_name)
 
-        datagen = get_datagenerator('/root/code/content', '/root/code/style', batch_size)
+        datagen = get_datagenerator('/home/user/data/train2014',
+                                    '/home/user/data/styles', batch_size)
 
         for iteration in range(config.num_steps):
             c, s = next(datagen)
 
             if iteration % config.checkpoint_steps != 0:
-                 sess.run(train_op, {c_op: c, s_op: s})
+                sess.run(train_op, {c_op: c, s_op: s})
             else:
-                 _, summary, step = sess.run([train_op, summary_op, step_op],
-                                             {c_op: c, s_op: s})
+                _, summary, step = sess.run([train_op, summary_op, step_op],
+                        {c_op: c, s_op: s})
 
-                 summary_writer.add_summary(summary, step)
+                summary_writer.add_summary(summary, step)
 
             if (iteration + 1) % config.save_steps == 0:
-                 saver.save(sess, save_name, global_step=step)
+                saver.save(sess, 'model_decent_v8')
 
 
 if __name__ == '__main__':
     np.random.seed(1)
     tf.set_random_seed(0)
 
-    main('model')
+    # run_loop()
+    main('')
