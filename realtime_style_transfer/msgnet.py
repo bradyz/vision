@@ -10,30 +10,26 @@ from PIL import Image
 from matplotlib import pyplot as plt
 
 import config
+import summary
 
 
 def conv(x, k, c_out, stride=1, normalize=True, post=''):
     c_in = x.get_shape().as_list()[-1]
 
+    # 3x3 filter, want 1 pad to fit.
+    # 5x5 filter, want 2 pad to fit.
+    # 7x7 filter, want 3 pad to fit.
     if k > 1:
-        x = tf.pad(x, [[0, 0], [k // 2, k // 2], [k // 2, k // 2], [0, 0]], mode='REFLECT')
-
-    std = 1.0 / tf.sqrt(1.0 * k * k * c_in / 2.0)
+        x = reflect_pad(x, k // 2)
 
     with tf.variable_scope('conv%s' % post):
         W = tf.get_variable('W', [k, k, c_in, c_out],
-                initializer=tf.contrib.layers.variance_scaling_initializer())
-                # initializer=tf.random_normal_initializer(stddev=0.01))
-                # initializer=tf.truncated_normal_initializer(stddev=std))
-                # initializer=tf.truncated_normal_initializer(stddev=0.1))
-                # initializer=tf.random_uniform_initializer(-std, std))
-                # initializer=tf.contrib.layers.xavier_initializer_conv2d())
-        # b = tf.get_variable('b', [c_out],
-        #         initializer=tf.constant_initializer(0.0))
+                initializer=tf.contrib.layers.xavier_initializer_conv2d())
+        b = tf.get_variable('b', [c_out],
+                initializer=tf.constant_initializer(0.0))
 
         Wx = tf.nn.conv2d(x, W, strides=[1, stride, stride, 1], padding='VALID')
-        y = Wx
-        # y = tf.nn.bias_add(Wx, b)
+        y = Wx + b
 
         if normalize:
             y = instance_normalization(y)
@@ -54,10 +50,12 @@ def conv1x1(x, c_out, stride=1, post=''):
 
 
 def relu(x):
-    with tf.name_scope('relu'):
-        y = tf.nn.relu(x)
+    return tf.nn.relu(x)
 
-    return y
+
+def reflect_pad(x, k):
+    return tf.pad(x, [[0, 0], [k , k], [k , k], [0, 0]], mode='REFLECT')
+
 
 def gram_matrix(x):
     n, h, w, c = x.shape.as_list()
@@ -85,15 +83,15 @@ def get_trainable_variables():
 
 
 def get_activations(vgg, x_op, scope):
-    x_op = x_op[:, :, :, ::-1]
-    x_op = x_op - (103.939, 116.78, 123.68)
-        # x_op = x_op - 255.0 / 2.0
-        # vgg = vgg19.VGG19(include_top=False, input_tensor=x_op)
+    with tf.name_scope('preprocess_vgg'):
+        x_op = x_op[:, :, :, ::-1]
+        x_op = x_op - (103.939, 116.78, 123.68)
 
     return vgg.feed_forward(x_op, scope)
 
 
 def instance_normalization(x, post='', eps=1e-4):
+    # Want to normalize across the channels.
     channels = [x.shape.as_list()[-1]]
 
     with tf.variable_scope('in%s' % post):
@@ -164,14 +162,13 @@ def inspiration_layer(x, s_gram, post=''):
         std = 1.0 / tf.sqrt(1.0 * c / 2.0)
 
         W = tf.get_variable('W', [c, c],
-                initializer=tf.contrib.layers.variance_scaling_initializer())
-                # initializer=tf.random_normal_initializer(stddev=0.01))
-                # initializer=tf.truncated_normal_initializer(stddev=std))
-                # initializer=tf.truncated_normal_initializer(stddev=0.01))
+                initializer=tf.truncated_normal_initializer(stddev=std))
 
+        # Could adding a bias help?
         # b = tf.get_variable('b', [c],
         #         initializer=tf.constant_initializer(0.0))
         # WG = tf.map_fn(lambda gram: tf.matmul(W, gram) + b, s_gram)
+
         WG = tf.map_fn(lambda gram: tf.matmul(W, gram), s_gram)
 
         x = tf.matmul(x, WG)
@@ -206,7 +203,6 @@ def get_decoder_output(c_op, s_gram_list):
             block2 = conv9x9(block2, 3, False)
 
         with tf.variable_scope('predictions'):
-            # block3 = (tf.nn.tanh(block2) + 1.0) * 255.0 / 2.0
             block3 = tf.sigmoid(block2) * 255.0
 
     net_layers = {'block1': block1,
@@ -220,7 +216,8 @@ def mean_l2_diff(x, y):
     return tf.reduce_mean(tf.square(x - y))
 
 
-def get_loss_op(z_op, z_layer_list, z_gram_list, c_layer_list, s_gram_list, gram_weights):
+def get_loss_op(z_op, z_layer_list, z_gram_list,
+                c_layer_list, s_gram_list, gram_weights):
     with tf.name_scope('loss'):
         content_loss_op = 0.0
 
@@ -259,31 +256,27 @@ def get_summary(c_op, c_layer_list, s_op, s_gram_list,
     tf.summary.histogram('colors/generated', z_op)
 
     for i, layer_name in enumerate(layer_names):
-        c_layer_op = tf.transpose(c_layer_list[i][:1], (3, 1, 2, 0))
-        z_layer_op = tf.transpose(z_layer_list[i][:1], (3, 1, 2, 0))
-
-        tf.summary.image('c_activations/' + layer_name, tf.to_float(c_layer_op), 30)
-        tf.summary.image('z_activations/' + layer_name, tf.to_float(z_layer_op), 30)
+        summary.view_activation('c_activation' + layer_name, c_layer_list[i])
+        summary.view_activation('z_activation' + layer_name, z_layer_list[i])
 
     for layer_name, z_net_layer_op in z_net_layers.items():
+        summary.view_activation('z_layer/' + layer_name, z_net_layer_op)
+
         tf.summary.histogram('activation/' + layer_name, z_net_layer_op)
 
-        z_net_image = tf.transpose(z_net_layer_op[:1], (3, 1, 2, 0))
-
-        tf.summary.image('z_net_layer/' + layer_name, z_net_image, 10)
-
     for i, layer_name in enumerate(layer_names):
-        tf.summary.image('s_gram/' + layer_name, tf.expand_dims(s_gram_list[i], axis=-1))
-        tf.summary.image('z_gram/' + layer_name, tf.expand_dims(z_gram_list[i], axis=-1))
+        summary.view_gram('s_gram/' + layer_name, s_gram_list[i])
+        summary.view_gram('z_gram/' + layer_name, z_gram_list[i])
 
         tf.summary.histogram('s_gram/' + layer_name, s_gram_list[i])
+        tf.summary.histogram('z_gram/' + layer_name, z_gram_list[i])
 
     for dx_x in grad_var_op:
         dx, x = dx_x
 
         relative_grad = learn_rate_op * tf.div(tf.abs(dx), abs(x) + 1e-7)
         relative_grad_alive = tf.reduce_mean(
-                tf.to_float(tf.logical_and(1e-4 <= relative_grad, relative_grad <= 1e-2)))
+                tf.to_float(relative_grad >= 1e-7))
 
         tf.summary.scalar('grad/' + x.name, relative_grad_alive)
         tf.summary.histogram('weight/' + x.name, x)
@@ -340,67 +333,6 @@ def get_datagenerator(content_dir, style_dir, batch_size):
 
 def get_layers(activations, layer_names):
     return [activations[name] for name in layer_names]
-    # return [op.output for op in activations if op.name in layer_names]
-
-
-def plot_image(image):
-    x = np.squeeze(image)
-    x = np.uint8(x)
-
-    plt.xticks([])
-    plt.yticks([])
-    plt.imshow(x)
-
-
-def run_loop():
-    layer_names = ['relu1_1', 'relu2_1', 'relu3_1', 'relu4_1', 'relu5_1']
-    gram_weights = [1e-2, 1e1, 1e1, 4e0, 1e1]
-
-    vgg = vgg19.VGG19('imagenet-vgg-verydeep-19.mat')
-
-
-    with tf.Session() as sess:
-        hack = False
-
-        while True:
-            print('Enter a content and style path.')
-            content_path, style_path = input().split()
-
-            c = np.expand_dims(np.float32(Image.open(content_path)), axis=0)
-            s = np.expand_dims(np.float32(Image.open(style_path)), axis=0)
-
-            # The content source and activations.
-            c_op = tf.placeholder(tf.float32, shape=[1, c.shape[1], c.shape[2], 3])
-
-            # The style source and gram matrices.
-            s_op = tf.placeholder(tf.float32, shape=[1, s.shape[1], s.shape[2], 3])
-            s_activations = get_activations(vgg, s_op, 's')
-            s_gram_list = [gram_matrix(op) for op in get_layers(s_activations, layer_names)]
-
-            # Generated, activations, gram matrices.
-            z_op, z_net_layers = get_decoder_output(c_op, s_gram_list)
-
-            if not hack:
-                hack = True
-
-                saver = tf.train.Saver()
-                saver.restore(sess, 'model_decent_v3')
-
-            try:
-                z = sess.run(z_op, {c_op: c, s_op: s})
-
-                plt.subplot2grid((3, 2), (0, 0))
-                plot_image(c)
-
-                plt.subplot2grid((3, 2), (0, 1))
-                plot_image(s)
-
-                plt.subplot2grid((3, 2), (1, 0), colspan=2, rowspan=2)
-                plot_image(z)
-
-                plt.show()
-            except Exception as e:
-                print(e)
 
 
 def main(save_name, batch_size=4):

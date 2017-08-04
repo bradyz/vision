@@ -1,6 +1,4 @@
 import numpy as np
-from random import shuffle
-from past.builtins import xrange
 
 
 EPSILON = 1e-8
