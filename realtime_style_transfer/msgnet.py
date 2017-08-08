@@ -7,54 +7,34 @@ import vgg19
 
 from PIL import Image
 
-from matplotlib import pyplot as plt
-
 import config
 import summary
 
 
-def conv(x, k, c_out, stride=1, normalize=True, post=''):
-    c_in = x.get_shape().as_list()[-1]
+class ContentStyleExtractor(object):
+    def __init__(self, content_layers, style_layers, network=None):
+        self.content_layers = content_layers
+        self.style_layers = style_layers
 
-    # 3x3 filter, want 1 pad to fit.
-    # 5x5 filter, want 2 pad to fit.
-    # 7x7 filter, want 3 pad to fit.
-    if k > 1:
-        x = reflect_pad(x, k // 2)
+        self.network = network or vgg19.VGG19(config.vgg_weights)
 
-    with tf.variable_scope('conv%s' % post):
-        W = tf.get_variable('W', [k, k, c_in, c_out],
-                initializer=tf.contrib.layers.xavier_initializer_conv2d())
-        b = tf.get_variable('b', [c_out],
-                initializer=tf.constant_initializer(0.0))
+    def get_content_style(self, x_op, scope=None):
+        with tf.name_scope('preprocess'):
+            x_op = self.network.preprocess(x_op)
 
-        Wx = tf.nn.conv2d(x, W, strides=[1, stride, stride, 1], padding='VALID')
-        y = Wx + b
+        activations = self.network.feed_forward(x_op, scope)
 
-        if normalize:
-            y = instance_normalization(y)
+        content_layer_list = list()
 
-    return y
+        for layer_name in self.content_layers:
+            content_layer_list.append(activations[layer_name])
 
+        gram_list = list()
 
-def conv9x9(x, c_out, normalize, post=''):
-    return conv(x, 9, c_out, normalize=normalize, post='_9x9' + post)
+        for layer_name in self.style_layers:
+            gram_list.append(gram_matrix(activations[layer_name]))
 
-
-def conv3x3(x, c_out, stride=1, post=''):
-    return conv(x, 3, c_out, stride, post='_3x3' + post)
-
-
-def conv1x1(x, c_out, stride=1, post=''):
-    return conv(x, 1, c_out, stride, post='_1x1' + post)
-
-
-def relu(x):
-    return tf.nn.relu(x)
-
-
-def reflect_pad(x, k):
-    return tf.pad(x, [[0, 0], [k , k], [k , k], [0, 0]], mode='REFLECT')
+        return content_layer_list, gram_list
 
 
 def gram_matrix(x):
@@ -82,125 +62,29 @@ def get_trainable_variables():
     return weights
 
 
-def get_activations(vgg, x_op, scope):
-    with tf.name_scope('preprocess_vgg'):
-        x_op = x_op[:, :, :, ::-1]
-        x_op = x_op - (103.939, 116.78, 123.68)
-
-    return vgg.feed_forward(x_op, scope)
-
-
-def instance_normalization(x, post='', eps=1e-4):
-    # Want to normalize across the channels.
-    channels = [x.shape.as_list()[-1]]
-
-    with tf.variable_scope('in%s' % post):
-        x_mean, x_var = tf.nn.moments(x, axes=(1, 2), keep_dims=True)
-        x_std = tf.sqrt(x_var + eps)
-
-        gamma = tf.get_variable('gamma', channels,
-                initializer=tf.constant_initializer(1.0))
-        beta = tf.get_variable('beta', channels,
-                initializer=tf.constant_initializer(0.0))
-
-        x = (x - x_mean) / x_std
-        x = gamma * x + beta
-
-    return x
-
-
-def residual_block(x, k, repeat=2, post=''):
-    for i in range(repeat):
-        with tf.variable_scope('residual%s_%d' % (post, i)):
-            x_id = x
-
-            x = conv3x3(x, k, post='_1')
-            x = relu(x)
-            x = conv3x3(x, k, post='_2')
-
-            x = x_id + x
-
-    return x
-
-
-def bilinear(x, scale):
-    _, h, w, _ = x.shape.as_list()
-    h_new, w_new = int(scale * h), int(scale * w)
-
-    return tf.image.resize_nearest_neighbor( x, [h_new, w_new])
-
-
-def bilinear_up(x):
-    return bilinear(x, 2)
-
-
-def bilinear_down(x):
-    return bilinear(x, 0.5)
-
-
-def down_block(x, k, post=''):
-    x = conv3x3(x, k, 2, post=post)
-    x = relu(x)
-
-    return x
-
-
-def up_block(x, k, post=''):
-    x = conv3x3(x, k, post=post)
-    x = relu(x)
-    x = bilinear_up(x)
-
-    return x
-
-
-def inspiration_layer(x, s_gram, post=''):
-    n, h, w, c = x.shape.as_list()
-
-    with tf.variable_scope('inspiration%s' % post):
-        x = tf.reshape(x, [n, h * w, c])
-
-        std = 1.0 / tf.sqrt(1.0 * c / 2.0)
-
-        W = tf.get_variable('W', [c, c],
-                initializer=tf.truncated_normal_initializer(stddev=std))
-
-        # Could adding a bias help?
-        # b = tf.get_variable('b', [c],
-        #         initializer=tf.constant_initializer(0.0))
-        # WG = tf.map_fn(lambda gram: tf.matmul(W, gram) + b, s_gram)
-
-        WG = tf.map_fn(lambda gram: tf.matmul(W, gram), s_gram)
-
-        x = tf.matmul(x, WG)
-        x = tf.reshape(x, [n, h, w, c])
-        x = instance_normalization(x)
-
-    return x
-
-
 def get_decoder_output(c_op, s_gram_list):
     with tf.variable_scope('decoder'):
         with tf.variable_scope('block1'):
             block1 = (c_op / 255.0)
-            block1 = conv9x9(block1, 32, True)
-            block1 = relu(block1)
+            block1 = ops.conv9x9(block1, 32, True)
+            block1 = ops.relu(block1)
 
-            block1 = down_block(block1, 64, post='_1')
-            block1 = inspiration_layer(block1, s_gram_list[0], '_1')
+            block1 = ops.down_block(block1, 64, post='_1')
+            block1 = ops.inspiration_layer(block1, s_gram_list[0], '_1')
 
-            block1 = down_block(block1, 128, post='_2')
-            block1 = inspiration_layer(block1, s_gram_list[1], '_2')
+            block1 = ops.down_block(block1, 128, post='_2')
+            block1 = ops.inspiration_layer(block1, s_gram_list[1], '_2')
 
-            block1 = down_block(block1, 256, post='_3')
-            block1 = inspiration_layer(block1, s_gram_list[2], '_3')
+            block1 = ops.down_block(block1, 256, post='_3')
+            block1 = ops.inspiration_layer(block1, s_gram_list[2], '_3')
 
-            block1 = residual_block(block1, 256, repeat=5)
+            block1 = ops.residual_block(block1, 256, repeat=5)
 
         with tf.variable_scope('block2'):
-            block2 = up_block(block1, 128, post='_1')
-            block2 = up_block(block2, 64, post='_2')
-            block2 = up_block(block2, 32, post='_3')
-            block2 = conv9x9(block2, 3, False)
+            block2 = ops.up_block(block1, 128, post='_1')
+            block2 = ops.up_block(block2, 64, post='_2')
+            block2 = ops.up_block(block2, 32, post='_3')
+            block2 = ops.conv9x9(block2, 3, False)
 
         with tf.variable_scope('predictions'):
             block3 = tf.sigmoid(block2) * 255.0
@@ -216,7 +100,7 @@ def mean_l2_diff(x, y):
     return tf.reduce_mean(tf.square(x - y))
 
 
-def get_loss_op(z_op, z_layer_list, z_gram_list,
+def get_loss_op(z_layer_list, z_gram_list,
                 c_layer_list, s_gram_list, gram_weights):
     with tf.name_scope('loss'):
         content_loss_op = 0.0
@@ -331,36 +215,30 @@ def get_datagenerator(content_dir, style_dir, batch_size):
         yield c, s
 
 
-def get_layers(activations, layer_names):
-    return [activations[name] for name in layer_names]
-
-
 def main(save_name, batch_size=4):
-    layer_names = ['relu1_1', 'relu2_1', 'relu3_1', 'relu4_1', 'relu5_1']
+    style_layers = ['relu1_1', 'relu2_1', 'relu3_1', 'relu4_1', 'relu5_1']
+    content_layers = ['relu4_1']
+
     gram_weights = [1e-2, 1e1, 1e1, 8e0, 1e1]
 
-    vgg = vgg19.VGG19('imagenet-vgg-verydeep-19.mat')
+    extractor = ContentStyleExtractor(style_layers, content_layers)
 
     # The content source and activations.
     c_op = tf.placeholder(tf.float32, shape=[batch_size] + config.input_shape)
-    c_activations = get_activations(vgg, c_op, 'c')
-    c_layer_list = get_layers(c_activations, layer_names)
+    c_content_layer_list, c_gram_list = extractor.get_content_style(c_op, 'c')
 
     # The style source and gram matrices.
     s_op = tf.placeholder(tf.float32, shape=[batch_size] + config.input_shape)
-    s_activations = get_activations(vgg, s_op, 's')
-    s_gram_list = [gram_matrix(op) for op in get_layers(s_activations, layer_names)]
+    s_content_layer_list, s_gram_list = extractor.get_content_style(s_op, 's')
 
     # Generated, activations, gram matrices.
     z_op, z_net_layers = get_decoder_output(c_op, s_gram_list)
-    z_activations = get_activations(vgg, z_op, 'z')
-    z_layer_list = get_layers(z_activations, layer_names)
-    z_gram_list = [gram_matrix(op) for op in z_layer_list]
+    z_content_layer_list, z_gram_list = extractor.get_content_style(z_op, 'z')
 
     # Content, style.
     loss_op, style_loss_op, content_loss_op = get_loss_op(
-            z_op, [z_layer_list[3]], z_gram_list,
-            [c_layer_list[3]], s_gram_list, gram_weights)
+            z_content_layer_list, z_gram_list,
+            c_content_layer_list, s_gram_list, gram_weights)
 
     # Used for saving and gradient descent.
     train_vars = get_trainable_variables()
