@@ -9,6 +9,42 @@ from PIL import Image
 
 import config
 import summary
+import ops
+
+
+class MSGNet(object):
+    def feed_forward(c_op, s_gram_op_list, scope='decoder'):
+        with tf.variable_scope(decoder):
+            with tf.variable_scope('block1'):
+                block1 = (c_op / 255.0) - 0.5
+                block1 = ops.conv9x9(block1, 32, True)
+                block1 = ops.relu(block1)
+
+            with tf.variable_scope('block2'):
+                block2 = ops.down_block(block1, 64)
+                block2 = ops.inspiration_layer(block2, s_gram_op_list[0])
+
+            with tf.variable_scope('block3'):
+                block3 = ops.down_block(block2, 128)
+                block3 = ops.inspiration_layer(block3, s_gram_op_list[1])
+
+            with tf.variable_scope('block4'):
+                block4 = ops.down_block(block3, 256)
+                block4 = ops.inspiration_layer(block4, s_gram_op_list[2])
+
+            with tf.variable_scope('block5'):
+                block5 = ops.down_block(block4, 256)
+                block5 = ops.residual_block(block5, 256, repeat=5)
+
+            block6 = ops.up_block(block1, 128, 'block6')
+            block7 = ops.up_block(block2, 64, 'block7')
+            block8 = ops.up_block(block2, 32, 'block8')
+
+            with tf.variable_scope('predictions'):
+                block9 = ops.conv9x9(block8, 3, False)
+                block9 = tf.sigmoid(block9) * 255.0
+
+        return block9
 
 
 class ContentStyleExtractor(object):
@@ -17,18 +53,21 @@ class ContentStyleExtractor(object):
         self.style_layers = style_layers
 
         self.network = network or vgg19.VGG19(config.vgg_weights)
+        self.activations = None
 
     def get_content_style(self, x_op, scope=None):
         with tf.name_scope('preprocess'):
-            x_op = self.network.preprocess(x_op)
+            x_op = VGG19..preprocess(x_op)
 
-        activations = self.network.feed_forward(x_op, scope)
+        self.activations = self.network.feed_forward(x_op, scope)
 
+        # Content features.
         content_layer_list = list()
 
         for layer_name in self.content_layers:
             content_layer_list.append(activations[layer_name])
 
+        # Style features.
         gram_list = list()
 
         for layer_name in self.style_layers:
@@ -60,40 +99,6 @@ def get_trainable_variables():
         weights_names.add(op.name)
 
     return weights
-
-
-def get_decoder_output(c_op, s_gram_list):
-    with tf.variable_scope('decoder'):
-        with tf.variable_scope('block1'):
-            block1 = (c_op / 255.0)
-            block1 = ops.conv9x9(block1, 32, True)
-            block1 = ops.relu(block1)
-
-            block1 = ops.down_block(block1, 64, post='_1')
-            block1 = ops.inspiration_layer(block1, s_gram_list[0], '_1')
-
-            block1 = ops.down_block(block1, 128, post='_2')
-            block1 = ops.inspiration_layer(block1, s_gram_list[1], '_2')
-
-            block1 = ops.down_block(block1, 256, post='_3')
-            block1 = ops.inspiration_layer(block1, s_gram_list[2], '_3')
-
-            block1 = ops.residual_block(block1, 256, repeat=5)
-
-        with tf.variable_scope('block2'):
-            block2 = ops.up_block(block1, 128, post='_1')
-            block2 = ops.up_block(block2, 64, post='_2')
-            block2 = ops.up_block(block2, 32, post='_3')
-            block2 = ops.conv9x9(block2, 3, False)
-
-        with tf.variable_scope('predictions'):
-            block3 = tf.sigmoid(block2) * 255.0
-
-    net_layers = {'block1': block1,
-                  'block2': block2,
-                  'block3': block3}
-
-    return block3, net_layers
 
 
 def mean_l2_diff(x, y):
@@ -140,32 +145,11 @@ def get_summary(c_op, c_layer_list, s_op, s_gram_list,
     tf.summary.histogram('colors/generated', z_op)
 
     for i, layer_name in enumerate(layer_names):
-        summary.view_activation('c_activation' + layer_name, c_layer_list[i])
-        summary.view_activation('z_activation' + layer_name, z_layer_list[i])
-
-    for layer_name, z_net_layer_op in z_net_layers.items():
-        summary.view_activation('z_layer/' + layer_name, z_net_layer_op)
-
-        tf.summary.histogram('activation/' + layer_name, z_net_layer_op)
-
-    for i, layer_name in enumerate(layer_names):
         summary.view_gram('s_gram/' + layer_name, s_gram_list[i])
         summary.view_gram('z_gram/' + layer_name, z_gram_list[i])
 
         tf.summary.histogram('s_gram/' + layer_name, s_gram_list[i])
         tf.summary.histogram('z_gram/' + layer_name, z_gram_list[i])
-
-    for dx_x in grad_var_op:
-        dx, x = dx_x
-
-        relative_grad = learn_rate_op * tf.div(tf.abs(dx), abs(x) + 1e-7)
-        relative_grad_alive = tf.reduce_mean(
-                tf.to_float(relative_grad >= 1e-7))
-
-        tf.summary.scalar('grad/' + x.name, relative_grad_alive)
-        tf.summary.histogram('weight/' + x.name, x)
-        tf.summary.histogram('abs_grad/' + x.name, abs(dx))
-        tf.summary.histogram('rel_grad/' + x.name, relative_grad)
 
     return tf.summary.merge_all()
 
@@ -215,7 +199,7 @@ def get_datagenerator(content_dir, style_dir, batch_size):
         yield c, s
 
 
-def main(save_name, batch_size=4):
+def main(save_name, input_shape, batch_size=4):
     style_layers = ['relu1_1', 'relu2_1', 'relu3_1', 'relu4_1', 'relu5_1']
     content_layers = ['relu4_1']
 
@@ -224,15 +208,15 @@ def main(save_name, batch_size=4):
     extractor = ContentStyleExtractor(style_layers, content_layers)
 
     # The content source and activations.
-    c_op = tf.placeholder(tf.float32, shape=[batch_size] + config.input_shape)
-    c_content_layer_list, c_gram_list = extractor.get_content_style(c_op, 'c')
+    c_op = tf.placeholder(tf.float32, shape=[batch_size] + input_shape)
+    c_content_layer_list, _ = extractor.get_content_style(c_op, 'c')
 
     # The style source and gram matrices.
-    s_op = tf.placeholder(tf.float32, shape=[batch_size] + config.input_shape)
-    s_content_layer_list, s_gram_list = extractor.get_content_style(s_op, 's')
+    s_op = tf.placeholder(tf.float32, shape=[batch_size] + input_shape)
+    _, s_gram_list = extractor.get_content_style(s_op, 's')
 
     # Generated, activations, gram matrices.
-    z_op, z_net_layers = get_decoder_output(c_op, s_gram_list)
+    z_op, z_net_layers = MSGNet.feed_forward(c_op, s_gram_list)
     z_content_layer_list, z_gram_list = extractor.get_content_style(z_op, 'z')
 
     # Content, style.
@@ -255,8 +239,8 @@ def main(save_name, batch_size=4):
         grad_var_op = optimizer_op.compute_gradients(loss_op, var_list=train_vars)
         train_op = optimizer_op.apply_gradients(grad_var_op, global_step=step_op)
 
-    summary_op = get_summary(c_op, c_layer_list, s_op, s_gram_list,
-                             z_op, z_layer_list, z_gram_list, z_net_layers, layer_names,
+    summary_op = get_summary(c_op, s_op, 
+                             z_op, z_gram_list, layer_names,
                              loss_op, style_loss_op, content_loss_op,
                              learn_rate_op, grad_var_op)
 

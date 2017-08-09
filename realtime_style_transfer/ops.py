@@ -88,10 +88,11 @@ def down_block(x, k, post=''):
     return x
 
 
-def up_block(x, k, post=''):
-    x = conv3x3(x, k, post=post)
-    x = relu(x)
-    x = bilinear_up(x)
+def up_block(x, k, scope=None):
+    with tf.variable_scope(scope):
+        x = conv3x3(x, k, post=post)
+        x = relu(x)
+        x = bilinear_up(x)
 
     return x
 
