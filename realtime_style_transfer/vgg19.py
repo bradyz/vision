@@ -49,7 +49,7 @@ class VGG19:
     def preprocess(self, image):
         return image-self.mean_pixel
 
-    def undo_preprocess(self,image):
+    def undo_preprocess(self, image):
         return image+self.mean_pixel
 
     def feed_forward(self, input_image, scope=None):

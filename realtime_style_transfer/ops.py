@@ -3,11 +3,10 @@ import tensorflow as tf
 
 def inspiration_layer(x, s_gram, post=''):
     n, h, w, c = x.shape.as_list()
+    std = 1.0 / tf.sqrt(1.0 * c / 2.0)
 
     with tf.variable_scope('inspiration%s' % post):
         x = tf.reshape(x, [n, h * w, c])
-
-        std = 1.0 / tf.sqrt(1.0 * c / 2.0)
 
         W = tf.get_variable('W', [c, c],
                 initializer=tf.truncated_normal_initializer(stddev=std))
@@ -15,12 +14,11 @@ def inspiration_layer(x, s_gram, post=''):
 
         x = tf.matmul(x, WG)
         x = tf.reshape(x, [n, h, w, c])
-        x = instance_normalization(x)
 
     return x
 
 
-def instance_normalization(x, post='', eps=1e-4):
+def instance_normalization(x, post='', eps=1e-9):
     # Want to normalize across the channels.
     channels = [x.shape.as_list()[-1]]
 
@@ -40,24 +38,52 @@ def instance_normalization(x, post='', eps=1e-4):
 
 
 def reflect_pad(x, k):
-    return tf.pad(x, [[0, 0], [k , k], [k , k], [0, 0]], mode='REFLECT')
+    return tf.pad(x, [[0, 0], [k, k], [k, k], [0, 0]], mode='REFLECT')
 
 
-def residual_block(x, k, repeat=2, post=''):
+def residual_block(x, scope='residual', repeat=2):
+    k = x.shape.as_list()[-1]
+
     for i in range(repeat):
-        with tf.variable_scope('residual%s_%d' % (post, i)):
+        with tf.variable_scope('%s/%s' % (scope, i)):
             x_id = x
 
-            x = conv3x3(x, k, post='_1')
+            x = conv1x1(x, k // 2, post='_1')
             x = relu(x)
-            x = conv3x3(x, k, post='_2')
+
+            x = conv3x3(x, k // 2)
+            x = relu(x)
+
+            x = conv1x1(x, k, post='_2')
+            x = relu(x)
 
             x = x_id + x
 
     return x
 
 
-def conv9x9(x, c_out, normalize, post=''):
+def down_block(x, k, s_gram_op, scope=None):
+    with tf.variable_scope(scope):
+        x = conv3x3(x, k, 2)
+        x = relu(x)
+
+        x = inspiration_layer(x, s_gram_op)
+
+    return x
+
+
+def up_block(x, k, scope=None):
+    with tf.variable_scope(scope):
+        x = conv1x1(x, k)
+        x = bilinear_up(x)
+
+        x = conv3x3(x, k)
+        x = relu(x)
+
+    return x
+
+
+def conv9x9(x, c_out, normalize=True, post=''):
     return conv(x, 9, c_out, normalize=normalize, post='_9x9' + post)
 
 
@@ -81,41 +107,25 @@ def bilinear_down(x):
     return bilinear(x, 0.5)
 
 
-def down_block(x, k, post=''):
-    x = conv3x3(x, k, 2, post=post)
-    x = relu(x)
-
-    return x
-
-
-def up_block(x, k, scope=None):
-    with tf.variable_scope(scope):
-        x = conv3x3(x, k, post=post)
-        x = relu(x)
-        x = bilinear_up(x)
-
-    return x
-
-
 def bilinear(x, scale):
     _, h, w, _ = x.shape.as_list()
     h_new, w_new = int(scale * h), int(scale * w)
 
-    return tf.image.resize_nearest_neighbor( x, [h_new, w_new])
+    return tf.image.resize_nearest_neighbor(x, [h_new, w_new])
 
 
 def conv(x, k, c_out, stride=1, normalize=True, post=''):
     c_in = x.get_shape().as_list()[-1]
 
-    # 3x3 filter, want 1 pad to fit.
-    # 5x5 filter, want 2 pad to fit.
-    # 7x7 filter, want 3 pad to fit.
+    # 3x3 filter => 1 pad.
+    # 5x5 filter => 2 pad.
+    # 7x7 filter => 3 pad.
     if k > 1:
         x = reflect_pad(x, k // 2)
 
     with tf.variable_scope('conv%s' % post):
         W = tf.get_variable('W', [k, k, c_in, c_out],
-                initializer=tf.contrib.layers.xavier_initializer_conv2d())
+                initializer=tf.glorot_uniform_initializer())
         b = tf.get_variable('b', [c_out],
                 initializer=tf.constant_initializer(0.0))
 
