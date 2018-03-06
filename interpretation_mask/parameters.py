@@ -20,10 +20,12 @@ class Parameters(object):
 
         self.use_vizdom = True
 
-        self.alpha = 0.01
-        self.beta = 600.0
+        self.gamma = 10.0
+        self.alpha = 0.0
+        self.beta = 10.0
+        self.reg = 1e-1
 
-        self.max_norm = 16.0
+        self.max_norm = 18.0
 
     def parse(self):
         parser = argparse.ArgumentParser()
@@ -52,3 +54,7 @@ class Parameters(object):
 
     def state_dict(self):
         return self.__dict__
+
+    def load_state_dict(self, state):
+        for key, val in state.items():
+            self.__dict__[key] = val

@@ -44,7 +44,7 @@ class AttentionMaskLoss(object):
 
 
 def train_or_test(classifier, optimizer_classifier, masker, optimizer_masker,
-        criterion, logger, data, params, is_train):
+        criterion, logger, data, params, is_train, is_first):
     if is_train:
         classifier.train()
         masker.train()
@@ -53,13 +53,13 @@ def train_or_test(classifier, optimizer_classifier, masker, optimizer_masker,
         masker.eval()
 
     # Metrics.
-    losses_mask = list()
+    losses_mask = [0.0]
     losses = list()
 
     correct = 0
     total_samples = 0
 
-    for inputs, targets in tqdm.tqdm(data, total=len(data)):
+    for inputs, targets in tqdm.tqdm(data, total=len(data), desc='Batch'):
         if params.use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda()
 
@@ -69,38 +69,38 @@ def train_or_test(classifier, optimizer_classifier, masker, optimizer_masker,
             optimizer_classifier.zero_grad()
             optimizer_masker.zero_grad()
 
-        mask = torch.round(masker(inputs))
-        mask_rgb = torch.cat([mask, mask, mask], 1)
-
-        foreground = mask_rgb * inputs
-        background = (1.0 - mask_rgb) * inputs
-
-        foreground_logits = classifier(foreground)
-        background_logits = classifier(background)
-
-        mask_loss = criterion(mask, foreground_logits, background_logits, targets)
-
-        losses_mask.append(mask_loss.cpu().data[0])
-
-        if is_train:
-            mask_loss.backward()
-            optimizer_masker.step()
-
-            optimizer_masker.zero_grad()
-            optimizer_classifier.zero_grad()
+        # mask = torch.round(masker(inputs))
+        # mask_rgb = torch.cat([mask, mask, mask], 1)
+        #
+        # foreground = mask_rgb * inputs
+        # background = (1.0 - mask_rgb) * inputs
+        #
+        # foreground_logits = classifier(foreground)
+        # background_logits = classifier(background)
+        #
+        # mask_loss = criterion(mask, foreground_logits, background_logits, targets)
+        #
+        # losses_mask.append(mask_loss.cpu().data[0])
+        #
+        # if is_train:
+        #     mask_loss.backward()
+        #     optimizer_masker.step()
+        #
+        #     optimizer_masker.zero_grad()
+        #     optimizer_classifier.zero_grad()
 
         logits = classifier(inputs)
         loss = criterion.xent_loss(logits, targets)
 
-        if is_train:
+        if is_train and not is_first:
             loss.backward()
 
             optimizer_classifier.step()
 
-        logger.draw(
-                inputs.cpu().data.numpy(),
-                mask_rgb.cpu().data.numpy(),
-                is_train)
+        # logger.draw(
+        #         inputs.cpu().data.numpy(),
+        #         mask_rgb.cpu().data.numpy(),
+        #         is_train)
 
         losses.append(loss.cpu().data[0])
 
@@ -148,16 +148,14 @@ def main(params):
     data_train = CIFAR10.get_data(params.data_dir, True, params.batch_size)
     data_test = CIFAR10.get_data(params.data_dir, False, params.batch_size)
 
-    for epoch in range(logger.epoch, params.max_epoch):
-        print('Epoch: %s' % epoch)
+    for epoch in tqdm.trange(logger.epoch, params.max_epoch, desc='Epoch'):
+        train_or_test(
+                classifier, optimizer_classifier, masker, optimizer_masker,
+                criterion, logger, data_train, params, True, epoch == 0)
 
         train_or_test(
                 classifier, optimizer_classifier, masker, optimizer_masker,
-                criterion, logger, data_train, params, True)
-
-        train_or_test(
-                classifier, optimizer_classifier, masker, optimizer_masker,
-                criterion, logger, data_test, params, False)
+                criterion, logger, data_test, params, False, epoch == 0)
 
         logger.set_epoch(epoch+1)
 

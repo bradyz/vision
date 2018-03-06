@@ -27,8 +27,6 @@ def maybe_load(state, checkpoint_path):
 
 
 def save(state, checkpoint_path):
-    print('Saving to %s.' % checkpoint_path)
-
     state_dict = {key: value.state_dict() for key, value in state.items()}
 
     torch.save(state_dict, checkpoint_path)

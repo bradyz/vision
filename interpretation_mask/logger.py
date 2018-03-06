@@ -102,20 +102,12 @@ class ScalarPlot(object):
         if not self.values:
             return
 
-        if self.win is None:
-            self.win = self.viz.line(
-                    X=np.float32(list(range(len(self.values)))),
-                    Y=np.float32(self.values),
-                    name=self.title,
-                    opts=dict(title=self.title))
-
-        else:
-            self.viz.line(
-                    X=np.float32(list(range(len(self.values)))),
-                    Y=np.float32(self.values),
-                    name=self.title,
-                    win=self.win,
-                    opts=dict(title=self.title))
+        self.viz.line(
+                X=np.float32(list(range(len(self.values)))),
+                Y=np.float32(self.values),
+                name=self.title,
+                win=self.title,
+                opts=dict(title=self.title))
 
     def __getitem__(self, idx):
         return self.values[idx]
