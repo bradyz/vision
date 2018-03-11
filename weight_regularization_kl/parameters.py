@@ -13,11 +13,14 @@ class Parameters(object):
         self.data_dir = None
 
         self.batch_size = 128
-        self.lr = 2e-3
-        self.max_epoch = 200
+
+        self.lr = 1e-1
+        self.end_lr = 1e-3
+
+        self.max_epoch = 300
 
         self.weight_decay = 0.0
-        self.kl_decay = 5e-2
+        self.kl_decay = 5e-5
 
         self.use_vizdom = True
 

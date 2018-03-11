@@ -16,6 +16,7 @@ class BasicDataLoader(DataLoaderWrapper):
         augments = list()
 
         if is_train:
+            augments.append(transforms.RandomCrop(32, padding=4))
             augments.append(transforms.RandomHorizontalFlip())
 
         augments.append(transforms.ToTensor())

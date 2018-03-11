@@ -13,6 +13,15 @@ from utils import maybe_load, save
 from parameters import Parameters
 
 
+def modify_learning_rate(epoch, optimizer, params):
+    alpha = epoch / params.max_epoch
+
+    lr = (1.0 - alpha) * params.lr + alpha * params.end_lr
+
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+
+
 def get_initial_mean_std(weights):
     means = list()
     stds = list()
@@ -103,7 +112,7 @@ def main(params):
 
     net = BasicNetwork(CIFAR10.in_channels, CIFAR10.num_classes, scope)
     log = Logger()
-    opt = optim.Adam(
+    opt = optim.SGD(
             net.parameters(), lr=params.lr, weight_decay=params.weight_decay)
 
     state = {'net': net,
@@ -125,7 +134,9 @@ def main(params):
     data_train = CIFAR10.get_data(params.data_dir, True, params.batch_size)
     data_test = CIFAR10.get_data(params.data_dir, False, params.batch_size)
 
-    for epoch in tqdm.trange(log.epoch, params.max_epoch, desc='Epoch'):
+    for epoch in tqdm.trange(log.epoch, params.max_epoch + 1, desc='Epoch'):
+        modify_learning_rate(epoch, opt, params)
+
         is_first = epoch == 0
 
         train_or_test(
